@@ -2,6 +2,103 @@
 
 HALO is a Solana network observer and Jito bundle execution tracker. The core goal is to watch the chain in real time, submit bundles, and record enough lifecycle data to understand why a transaction landed, lagged, or failed.
 
+## Initialize The Project
+
+Prerequisites:
+
+- Node.js 20+
+- pnpm 10+
+- Docker Desktop or another Docker runtime
+- A Yellowstone gRPC endpoint and `x-token`
+
+Install dependencies:
+
+```bash
+pnpm install
+```
+
+Create your local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Update `.env` with your Yellowstone values. The gRPC URL must include the protocol, for example:
+
+```bash
+YELLOWSTONE_GRPC_URL="https://fra.grpc.solinfra.dev:443"
+YELLOWSTONE_GRPC_TOKEN="your-x-token"
+```
+
+Start local infrastructure:
+
+```bash
+docker compose up -d postgres redis
+```
+
+Initialize the database:
+
+```bash
+pnpm db:migrate
+```
+
+Run the watcher:
+
+```bash
+pnpm dev:watcher
+```
+
+You should see live slot output:
+
+```txt
+Slot: 425625512
+Slot: 425625513
+Slot: 425625514
+```
+
+Verify Redis is receiving the current slot:
+
+```bash
+redis-cli GET network:current_slot
+```
+
+Submit a test Jito bundle (requires a funded wallet in `.env`):
+
+```bash
+pnpm dev:executor
+```
+
+Track bundle lifecycle in a separate terminal:
+
+```bash
+pnpm dev:tracker
+```
+
+Open the dashboard:
+
+```bash
+pnpm dev:dashboard
+```
+
+Then visit `http://localhost:5173`. The dashboard reads `network:current_slot` from Redis and recent lifecycle rows from Postgres.
+
+Set these in `.env` before running the executor:
+
+```bash
+EXECUTOR_PRIVATE_KEY="your-base58-secret-key"
+TRANSFER_DESTINATION="destination-wallet-pubkey"
+TRANSFER_LAMPORTS="1000"
+JITO_TIP_LAMPORTS="10000"
+JITO_BLOCK_ENGINE_URL="mainnet.block-engine.jito.wtf"
+```
+
+Useful checks:
+
+```bash
+pnpm typecheck
+pnpm build
+```
+
 ## README Questions
 
 ### Question 1: What does the delta between `processed_at` and `confirmed_at` tell you about network health at the time of submission?

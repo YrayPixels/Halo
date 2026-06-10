@@ -25,3 +25,19 @@ export function createYellowstoneClient(
 
   return new Client(endpoint, token, undefined, { enabled: reconnect });
 }
+
+export function writeSubscribeRequest(
+  stream: ClientDuplexStream,
+  request: SubscribeRequest,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    stream.write(request, (error?: Error | null) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+}

@@ -1,12 +1,13 @@
+import type { Redis } from "ioredis";
 import {
   CommitmentLevel,
   createYellowstoneClient,
+  REDIS_KEYS,
+  writeSubscribeRequest,
   type ClientDuplexStream,
   type SubscribeRequest,
   type SubscribeUpdate,
-} from "./yellowstone-client.js";
-import type { Redis } from "ioredis";
-import { REDIS_KEYS } from "@halo/shared";
+} from "@halo/shared";
 
 function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): SubscribeRequest {
   return {
@@ -25,19 +26,6 @@ function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): Subs
     commitment: CommitmentLevel.PROCESSED,
     ...overrides,
   };
-}
-
-function writeSubscribeRequest(stream: ClientDuplexStream, request: SubscribeRequest): Promise<void> {
-  return new Promise((resolve, reject) => {
-    stream.write(request, (error?: Error | null) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve();
-    });
-  });
 }
 
 export async function startSlotStream(
