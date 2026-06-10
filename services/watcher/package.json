@@ -10,7 +10,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@halo/database": "workspace:*",
     "@halo/shared": "workspace:*",
+    "@halo/types": "workspace:*",
+    "bs58": "^6.0.0",
     "@triton-one/yellowstone-grpc": "^5.0.9",
     "dotenv": "^17.2.3",
     "ioredis": "^5.11.1"

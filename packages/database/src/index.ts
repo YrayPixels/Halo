@@ -1,14 +1,4 @@
-import { PrismaClient } from "@prisma/client";
-
-const globalForPrisma = globalThis as typeof globalThis & {
-  prisma?: PrismaClient;
-};
-
-export const prisma = globalForPrisma.prisma ?? new PrismaClient();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-}
-
-export { PrismaClient };
+export { PrismaClient } from "@prisma/client";
 export type { Transaction } from "@prisma/client";
+export { prisma } from "./client.js";
+export { advanceTransactionStatus, loadTrackedSignatures } from "./lifecycle.js";

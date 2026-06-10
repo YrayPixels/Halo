@@ -1,10 +1,11 @@
+import bs58 from "bs58";
 import type { Redis } from "ioredis";
+import { advanceTransactionStatus, loadTrackedSignatures } from "@halo/database";
 import {
   CommitmentLevel,
   createYellowstoneClient,
   REDIS_KEYS,
   writeSubscribeRequest,
-  type ClientDuplexStream,
   type SubscribeRequest,
   type SubscribeUpdate,
 } from "@halo/shared";
@@ -17,8 +18,24 @@ function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): Subs
         filterByCommitment: true,
       },
     },
-    transactions: {},
-    transactionsStatus: {},
+    transactions: {
+      all: {
+        vote: false,
+        failed: true,
+        accountInclude: [],
+        accountExclude: [],
+        accountRequired: [],
+      },
+    },
+    transactionsStatus: {
+      all: {
+        vote: false,
+        failed: true,
+        accountInclude: [],
+        accountExclude: [],
+        accountRequired: [],
+      },
+    },
     blocks: {},
     blocksMeta: {},
     entry: {},
@@ -28,16 +45,50 @@ function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): Subs
   };
 }
 
+function decodeSignature(signature: Uint8Array): string {
+  return bs58.encode(signature);
+}
+
 export async function startSlotStream(
   endpoint: string,
   token: string | undefined,
   redis: Redis,
 ): Promise<() => void> {
   const client = createYellowstoneClient(endpoint, token);
+  let watchlist = await loadTrackedSignatures();
+
+  const refreshWatchlist = async () => {
+    watchlist = await loadTrackedSignatures();
+  };
+
+  const watchlistInterval = setInterval(() => {
+    void refreshWatchlist().catch((error: unknown) => {
+      console.error("Failed to refresh watchlist:", error);
+    });
+  }, 3_000);
 
   await client.connect();
 
   const stream = await client.subscribe(createSubscribeRequest());
+
+  const handleTrackedTransaction = (
+    signature: string,
+    slot: string,
+    failed: boolean,
+  ) => {
+    if (!watchlist.has(signature)) {
+      return;
+    }
+
+    if (failed) {
+      void advanceTransactionStatus(signature, "FAILED");
+      return;
+    }
+
+    void advanceTransactionStatus(signature, "PROCESSED", {
+      slot: BigInt(slot),
+    });
+  };
 
   stream.on("data", (update: SubscribeUpdate) => {
     if (update.ping) {
@@ -49,16 +100,30 @@ export async function startSlotStream(
       return;
     }
 
-    if (!update.slot) {
+    if (update.slot) {
+      const slot = update.slot.slot;
+      console.log(`Slot: ${slot}`);
+
+      void redis.set(REDIS_KEYS.networkCurrentSlot, slot).catch((error: unknown) => {
+        console.error(`Failed to write ${REDIS_KEYS.networkCurrentSlot}:`, error);
+      });
       return;
     }
 
-    const slot = update.slot.slot;
-    console.log(`Slot: ${slot}`);
+    if (update.transaction?.transaction?.signature) {
+      const signature = decodeSignature(update.transaction.transaction.signature);
+      handleTrackedTransaction(signature, update.transaction.slot, false);
+      return;
+    }
 
-    void redis.set(REDIS_KEYS.networkCurrentSlot, slot).catch((error: unknown) => {
-      console.error(`Failed to write ${REDIS_KEYS.networkCurrentSlot}:`, error);
-    });
+    if (update.transactionStatus?.signature) {
+      const signature = decodeSignature(update.transactionStatus.signature);
+      handleTrackedTransaction(
+        signature,
+        update.transactionStatus.slot,
+        Boolean(update.transactionStatus.err),
+      );
+    }
   });
 
   stream.on("error", (error: Error) => {
@@ -70,6 +135,7 @@ export async function startSlotStream(
   });
 
   return () => {
+    clearInterval(watchlistInterval);
     stream.destroy();
   };
 }

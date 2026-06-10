@@ -6,10 +6,12 @@
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
+    "dev:all": "pnpm infra:up && pnpm db:migrate && concurrently -n watcher,tracker,dashboard -c yellow,cyan,green \"pnpm dev:watcher\" \"pnpm dev:tracker\" \"pnpm dev:dashboard\"",
     "dev:watcher": "pnpm --filter @halo/watcher dev",
     "dev:executor": "pnpm --filter @halo/executor dev",
     "dev:tracker": "pnpm --filter @halo/tracker dev",
     "dev:dashboard": "pnpm --filter @halo/dashboard dev",
+    "infra:up": "docker compose up -d postgres redis",
     "db:migrate": "pnpm --filter @halo/database db:migrate",
     "db:generate": "pnpm --filter @halo/database db:generate",
     "lint": "turbo lint",
@@ -17,6 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "latest",
+    "concurrently": "^10.0.3",
     "tsx": "latest",
     "turbo": "latest",
     "typescript": "latest"

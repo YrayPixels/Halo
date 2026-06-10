@@ -30,31 +30,45 @@ YELLOWSTONE_GRPC_URL="https://fra.grpc.solinfra.dev:443"
 YELLOWSTONE_GRPC_TOKEN="your-x-token"
 ```
 
-Start local infrastructure:
+Start the live stack:
 
 ```bash
-docker compose up -d postgres redis
+pnpm dev:all
 ```
 
-Initialize the database:
+This starts Postgres, Redis, runs Prisma migrations, then launches:
+
+- watcher — single Yellowstone stream for slots + tracked transactions
+- tracker — RPC polling for confirmed/finalized lifecycle updates
+- dashboard — `http://localhost:5173`
+
+Only one Yellowstone gRPC stream is used, which fits single-stream provider tiers.
+
+The executor is intentionally not included because it submits a real Jito bundle and can spend SOL. Run it manually when you are ready:
 
 ```bash
+pnpm dev:executor
+```
+
+You can still run pieces individually:
+
+```bash
+pnpm infra:up
 pnpm db:migrate
+pnpm dev:watcher
+pnpm dev:tracker
+pnpm dev:dashboard
 ```
 
-Run the watcher:
+You should see live slot output from the watcher:
 
 ```bash
-pnpm dev:watcher
-```
-
-You should see live slot output:
-
-```txt
 Slot: 425625512
 Slot: 425625513
 Slot: 425625514
 ```
+
+Open the dashboard at `http://localhost:5173`. It reads `network:current_slot` from Redis and recent lifecycle rows from Postgres.
 
 Verify Redis is receiving the current slot:
 
@@ -62,25 +76,11 @@ Verify Redis is receiving the current slot:
 redis-cli GET network:current_slot
 ```
 
-Submit a test Jito bundle (requires a funded wallet in `.env`):
+Submit a test Jito bundle when ready (requires a funded wallet in `.env`):
 
 ```bash
 pnpm dev:executor
 ```
-
-Track bundle lifecycle in a separate terminal:
-
-```bash
-pnpm dev:tracker
-```
-
-Open the dashboard:
-
-```bash
-pnpm dev:dashboard
-```
-
-Then visit `http://localhost:5173`. The dashboard reads `network:current_slot` from Redis and recent lifecycle rows from Postgres.
 
 Set these in `.env` before running the executor:
 

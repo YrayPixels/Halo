@@ -1,41 +1,85 @@
 import { config } from "dotenv";
+import { Connection } from "@solana/web3.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { optionalEnv, requireEnv } from "@halo/shared";
-import { loadTrackedSignatures, pollSignatureStatuses } from "./lifecycle.js";
-import { startLifecycleStream } from "./stream.js";
+import { advanceTransactionStatus, loadTrackedSignatures } from "@halo/database";
+import { optionalEnv } from "@halo/shared";
+import type { TransactionStatus } from "@halo/types";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 config({ path: resolve(rootDir, ".env") });
 
+async function pollSignatureStatuses(
+  connection: Connection,
+  watchlist: Map<string, TransactionStatus>,
+): Promise<void> {
+  if (watchlist.size === 0) {
+    return;
+  }
+
+  const signatures = [...watchlist.keys()];
+  const response = await connection.getSignatureStatuses(signatures, {
+    searchTransactionHistory: true,
+  });
+
+  for (let index = 0; index < signatures.length; index += 1) {
+    const signature = signatures[index]!;
+    const status = response.value[index];
+
+    if (!status) {
+      continue;
+    }
+
+    if (status.err) {
+      await advanceTransactionStatus(signature, "FAILED");
+      continue;
+    }
+
+    const slot =
+      status.slot !== null && status.slot !== undefined ? BigInt(status.slot) : undefined;
+    const confirmationStatus = status.confirmationStatus;
+
+    if (confirmationStatus === "finalized") {
+      await advanceTransactionStatus(signature, "FINALIZED", { slot });
+      continue;
+    }
+
+    if (confirmationStatus === "confirmed") {
+      await advanceTransactionStatus(signature, "CONFIRMED", { slot });
+      continue;
+    }
+
+    if (confirmationStatus === "processed") {
+      await advanceTransactionStatus(signature, "PROCESSED", { slot });
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const rpcUrl = optionalEnv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com");
-  const yellowstoneGrpcUrl = requireEnv("YELLOWSTONE_GRPC_URL");
-  const yellowstoneGrpcToken = optionalEnv("YELLOWSTONE_GRPC_TOKEN") || undefined;
+  const connection = new Connection(rpcUrl, "confirmed");
 
   let watchlist = await loadTrackedSignatures();
 
   console.log("HALO tracker starting");
   console.log(`Solana RPC: ${rpcUrl}`);
-  console.log(`Yellowstone: ${yellowstoneGrpcUrl}`);
   console.log(`Watching ${watchlist.size} active signature(s)`);
-
-  const stopStream = await startLifecycleStream(
-    yellowstoneGrpcUrl,
-    yellowstoneGrpcToken,
-    () => watchlist,
-  );
+  console.log("Using RPC polling only (Yellowstone stream is owned by watcher)");
 
   const refreshWatchlist = async () => {
     watchlist = await loadTrackedSignatures();
   };
 
+  void pollSignatureStatuses(connection, watchlist).catch((error: unknown) => {
+    console.error("Initial signature poll failed:", error);
+  });
+
   const pollInterval = setInterval(() => {
-    void pollSignatureStatuses(rpcUrl, watchlist).catch((error: unknown) => {
+    void pollSignatureStatuses(connection, watchlist).catch((error: unknown) => {
       console.error("Signature poll failed:", error);
     });
-  }, 5_000);
+  }, 2_000);
 
   const watchlistInterval = setInterval(() => {
     void refreshWatchlist().catch((error: unknown) => {
@@ -47,7 +91,6 @@ async function main(): Promise<void> {
     console.log(`Received ${signal}, shutting down tracker`);
     clearInterval(pollInterval);
     clearInterval(watchlistInterval);
-    stopStream();
     process.exit(0);
   };
 
