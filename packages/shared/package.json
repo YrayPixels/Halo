@@ -17,6 +17,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@triton-one/yellowstone-grpc": "^5.0.9"
+    "@halo/types": "workspace:*",
+    "@triton-one/yellowstone-grpc": "^5.0.9",
+    "ioredis": "^5.11.1"
   }
 }

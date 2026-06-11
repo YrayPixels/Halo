@@ -14,7 +14,26 @@ export function optionalEnv(name: string, fallback = ""): string {
 
 export const REDIS_KEYS = {
   networkCurrentSlot: "network:current_slot",
+  recommendedTip: "network:recommended_tip",
 } as const;
+
+export {
+  ensureConsumerGroup,
+  publishTxEvent,
+  publishAgentComm,
+  publishRetryRequest,
+  parseTxEvent,
+  parseAgentCommEvent,
+  parseRetryRequestEvent,
+  REDIS_GROUPS,
+  REDIS_STREAMS,
+} from "./redis-streams.js";
+export type {
+  AgentCommEvent,
+  RetryRequestEvent,
+  StreamTxStatus,
+  TxLifecycleEvent,
+} from "./redis-streams.js";
 
 export {
   CommitmentLevel,

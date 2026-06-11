@@ -1,5 +1,8 @@
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
+import type { AgentCommMessage, AgentFlowStep } from "@halo/types";
+import { AgentFlow } from "./components/AgentFlow.js";
+import { AgentSwarm } from "./components/AgentSwarm.js";
 
 type TransactionStatus = "SUBMITTED" | "PROCESSED" | "CONFIRMED" | "FINALIZED" | "FAILED";
 
@@ -14,18 +17,42 @@ interface DashboardTransaction {
   finalizedAt: string | null;
   slot: string | null;
   tipLamports: string | null;
+  failureClass: string | null;
+  failureReason: string | null;
+  attempt: number;
+}
+
+interface AgentDecisionSummary {
+  id: string;
+  failureClass: string;
+  reasoning: string;
+  action: string;
+  recommendedTipLamports: string;
+  shouldRetry: boolean;
+  bundleId: string | null;
+  createdAt: string;
 }
 
 interface DashboardOverview {
   currentSlot: string | null;
   counts: Partial<Record<TransactionStatus, number>>;
   transactions: DashboardTransaction[];
+  agents: {
+    flowSteps: AgentFlowStep[];
+    comms: AgentCommMessage[];
+    latestDecision: AgentDecisionSummary | null;
+  };
 }
 
 const EMPTY_OVERVIEW: DashboardOverview = {
   currentSlot: null,
   counts: {},
   transactions: [],
+  agents: {
+    flowSteps: [],
+    comms: [],
+    latestDecision: null,
+  },
 };
 
 const LIFECYCLE: TransactionStatus[] = ["SUBMITTED", "PROCESSED", "CONFIRMED", "FINALIZED"];
@@ -206,6 +233,39 @@ function BundleTimeline({ transaction }: { transaction?: DashboardTransaction })
   );
 }
 
+function RecentFailures({ transactions }: { transactions: DashboardTransaction[] }) {
+  const failures = transactions.filter((transaction) => transaction.status === "FAILED");
+
+  return (
+    <div className="panel p-6">
+      <div className="mb-4">
+        <h3 className="text-sm uppercase tracking-[0.2em] text-muted-foreground">Recent Failures · classified</h3>
+        <p className="mono mt-1 text-xs text-muted-foreground/70">agent-classified bundle failures</p>
+      </div>
+      {failures.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No classified failures yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {failures.slice(0, 5).map((failure) => (
+            <div
+              key={failure.id}
+              className="rounded-lg border border-border/50 bg-surface-elevated/40 px-4 py-3"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="mono text-xs text-danger">{failure.failureClass ?? "UNKNOWN"}</span>
+                <span className="mono text-[10px] text-muted-foreground">attempt {failure.attempt}</span>
+              </div>
+              <p className="mono mt-2 text-xs text-muted-foreground">
+                {failure.failureReason ?? "Awaiting agent classification"}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TransactionTable({ transactions }: { transactions: DashboardTransaction[] }) {
   return (
     <div className="panel overflow-hidden">
@@ -222,13 +282,14 @@ function TransactionTable({ transactions }: { transactions: DashboardTransaction
               <th className="px-6 py-3">Bundle</th>
               <th className="px-6 py-3">Slot</th>
               <th className="px-6 py-3">Tip</th>
+              <th className="px-6 py-3">Attempt</th>
               <th className="px-6 py-3">Created</th>
             </tr>
           </thead>
           <tbody>
             {transactions.length === 0 ? (
               <tr>
-                <td className="px-6 py-8 text-sm text-muted-foreground" colSpan={6}>
+                <td className="px-6 py-8 text-sm text-muted-foreground" colSpan={7}>
                   No lifecycle rows yet. Run `pnpm dev:executor` to submit a bundle.
                 </td>
               </tr>
@@ -249,6 +310,9 @@ function TransactionTable({ transactions }: { transactions: DashboardTransaction
                   </td>
                   <td className="mono px-6 py-4 text-xs text-muted-foreground">
                     {transaction.tipLamports ?? "-"}
+                  </td>
+                  <td className="mono px-6 py-4 text-xs text-muted-foreground">
+                    {transaction.attempt}
                   </td>
                   <td className="mono px-6 py-4 text-xs text-muted-foreground">
                     {formatDate(transaction.createdAt)}
@@ -330,6 +394,7 @@ export function App() {
           </div>
           <nav className="mono hidden items-center gap-6 text-xs uppercase tracking-widest text-muted-foreground md:flex">
             <a className="transition hover:text-foreground" href="#network">Network</a>
+            <a className="transition hover:text-foreground" href="#agents">Agents</a>
             <a className="transition hover:text-foreground" href="#bundles">Bundles</a>
             <a className="transition hover:text-foreground" href="#transactions">Transactions</a>
           </nav>
@@ -400,7 +465,32 @@ export function App() {
           <NetworkPanel overview={overview} updatedAt={updatedAt} />
         </section>
 
-        <section id="bundles">
+        <section id="agents" className="space-y-6">
+          <AgentSwarm comms={overview.agents.comms} />
+          <div className="grid gap-6 lg:grid-cols-2">
+            <AgentFlow steps={overview.agents.flowSteps} />
+            <div className="space-y-6">
+              <BundleTimeline transaction={latestTransaction} />
+              <RecentFailures transactions={overview.transactions} />
+              {overview.agents.latestDecision && (
+                <div className="panel p-6">
+                  <h3 className="text-sm uppercase tracking-[0.2em] text-muted-foreground">Latest Agent Decision</h3>
+                  <p className="mono mt-3 text-xs text-accent">{overview.agents.latestDecision.action}</p>
+                  <p className="mono mt-2 text-sm text-muted-foreground">
+                    {overview.agents.latestDecision.reasoning}
+                  </p>
+                  <div className="mono mt-4 flex flex-wrap gap-4 text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <span>tip {overview.agents.latestDecision.recommendedTipLamports}</span>
+                    <span>retry {overview.agents.latestDecision.shouldRetry ? "yes" : "no"}</span>
+                    <span>bundle {truncate(overview.agents.latestDecision.bundleId)}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section id="bundles" className="hidden">
           <BundleTimeline transaction={latestTransaction} />
         </section>
 

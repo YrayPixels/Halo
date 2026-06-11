@@ -20,6 +20,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@halo/types": "workspace:*",
     "@prisma/client": "^6.19.0"
   },
   "devDependencies": {

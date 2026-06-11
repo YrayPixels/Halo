@@ -38,11 +38,11 @@ pnpm dev:all
 
 This starts Postgres, Redis, runs Prisma migrations, then launches:
 
-- watcher — single Yellowstone stream for slots + tracked transactions
-- tracker — RPC polling for confirmed/finalized lifecycle updates
+- watcher — owns the single Yellowstone stream, writes slots to Redis, and publishes tracked tx events to `halo:tx_events`
+- tracker — consumes Redis tx events into Postgres, then RPC-polls for confirmed/finalized
 - dashboard — `http://localhost:5173`
 
-Only one Yellowstone gRPC stream is used, which fits single-stream provider tiers.
+Only one Yellowstone gRPC stream is used. Watcher and tracker are decoupled through Redis Streams.
 
 The executor is intentionally not included because it submits a real Jito bundle and can spend SOL. Run it manually when you are ready:
 

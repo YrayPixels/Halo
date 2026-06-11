@@ -6,7 +6,9 @@
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
-    "dev:all": "pnpm infra:up && pnpm db:migrate && concurrently -n watcher,tracker,dashboard -c yellow,cyan,green \"pnpm dev:watcher\" \"pnpm dev:tracker\" \"pnpm dev:dashboard\"",
+    "dev:all": "pnpm infra:up && pnpm db:migrate && concurrently -n watcher,tracker,intelligence,dashboard -c yellow,cyan,magenta,green \"pnpm dev:watcher\" \"pnpm dev:tracker\" \"pnpm dev:intelligence\" \"pnpm dev:dashboard\"",
+    "dev:intelligence": "pnpm --filter @halo/intelligence dev",
+    "dev:executor:daemon": "EXECUTOR_DAEMON=true pnpm --filter @halo/executor dev",
     "dev:watcher": "pnpm --filter @halo/watcher dev",
     "dev:executor": "pnpm --filter @halo/executor dev",
     "dev:tracker": "pnpm --filter @halo/tracker dev",

@@ -13,6 +13,7 @@
   "dependencies": {
     "@halo/database": "workspace:*",
     "@halo/shared": "workspace:*",
+    "@halo/types": "workspace:*",
     "@tailwindcss/vite": "^4.3.0",
     "@vitejs/plugin-react": "^6.0.2",
     "dotenv": "^17.4.2",

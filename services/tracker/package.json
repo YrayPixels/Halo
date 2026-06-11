@@ -12,7 +12,9 @@
   "dependencies": {
     "@halo/database": "workspace:*",
     "@halo/shared": "workspace:*",
+    "@halo/types": "workspace:*",
     "@solana/web3.js": "^1.98.4",
-    "dotenv": "^17.2.3"
+    "dotenv": "^17.2.3",
+    "ioredis": "^5.11.1"
   }
 }

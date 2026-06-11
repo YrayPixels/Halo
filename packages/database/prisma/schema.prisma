@@ -8,18 +8,80 @@ datasource db {
 }
 
 model Transaction {
-  id          String    @id @default(uuid())
-  signature   String?
-  bundleId    String?
-  status      String
-  createdAt   DateTime  @default(now())
-  processedAt DateTime?
-  confirmedAt DateTime?
-  finalizedAt DateTime?
-  slot        BigInt?
-  tipLamports BigInt?
+  id                    String    @id @default(uuid())
+  signature             String?
+  bundleId              String?
+  status                String
+  createdAt             DateTime  @default(now())
+  processedAt           DateTime?
+  confirmedAt           DateTime?
+  finalizedAt           DateTime?
+  slot                  BigInt?
+  tipLamports           BigInt?
+  failureClass          String?
+  failureReason         String?
+  errorMessage          String?
+  attempt               Int       @default(1)
+  parentTransactionId   String?
+  lastValidBlockHeight  BigInt?
+  submittedSlot         BigInt?
+  agentProcessed        Boolean   @default(false)
+
+  parentTransaction Transaction?  @relation("RetryChain", fields: [parentTransactionId], references: [id])
+  childTransactions Transaction[] @relation("RetryChain")
+  agentDecisions    AgentDecision[]
+  agentSteps        AgentStep[]
+  agentComms        AgentComm[]
 
   @@index([signature])
   @@index([bundleId])
   @@index([status])
+  @@index([agentProcessed])
+}
+
+model AgentDecision {
+  id                     String   @id @default(uuid())
+  transactionId          String
+  failureClass           String
+  reasoning              String
+  action                 String
+  recommendedTipLamports BigInt
+  shouldRetry            Boolean
+  leaderSlotsAway        Int?
+  createdAt              DateTime @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionId])
+  @@index([createdAt])
+}
+
+model AgentStep {
+  id            String   @id @default(uuid())
+  transactionId String
+  agentName     String
+  label         String
+  note          String
+  tone          String
+  stepOrder     Int
+  createdAt     DateTime @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionId])
+  @@index([createdAt])
+}
+
+model AgentComm {
+  id            String   @id @default(uuid())
+  transactionId String?
+  fromAgent     String
+  toAgent       String
+  message       String
+  createdAt     DateTime @default(now())
+
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionId])
+  @@index([createdAt])
 }

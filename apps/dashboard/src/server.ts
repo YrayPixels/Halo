@@ -4,7 +4,13 @@ import { Redis } from "ioredis";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
-import { prisma } from "@halo/database";
+import {
+  getLatestAgentDecision,
+  getLatestAgentFlow,
+  getRecentAgentComms,
+  prisma,
+} from "@halo/database";
+import type { AgentFlowStep, AgentTone } from "@halo/types";
 import { optionalEnv, REDIS_KEYS } from "@halo/shared";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,6 +33,9 @@ interface TransactionRow {
   finalizedAt: Date | null;
   slot: bigint | null;
   tipLamports: bigint | null;
+  failureClass: string | null;
+  failureReason: string | null;
+  attempt: number;
 }
 
 function serializeBigInt(value: bigint | number | null): string | null {
@@ -39,21 +48,36 @@ function serializeBigInt(value: bigint | number | null): string | null {
 
 app.get("/api/overview", async (_request, response) => {
   try {
-    const [currentSlot, transactions, statusRows] = await Promise.all([
-      redis.get(REDIS_KEYS.networkCurrentSlot),
-      prisma.transaction.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 20,
-      }) as Promise<TransactionRow[]>,
-      prisma.transaction.findMany({
-        select: { status: true },
-      }),
-    ]);
+    const [currentSlot, transactions, statusRows, agentSteps, agentComms, latestDecision] =
+      await Promise.all([
+        redis.get(REDIS_KEYS.networkCurrentSlot),
+        prisma.transaction.findMany({
+          orderBy: { createdAt: "desc" },
+          take: 20,
+        }) as Promise<TransactionRow[]>,
+        prisma.transaction.findMany({
+          select: { status: true },
+        }),
+        getLatestAgentFlow(),
+        getRecentAgentComms(30),
+        getLatestAgentDecision(),
+      ]);
 
     const counts = statusRows.reduce<Record<string, number>>((accumulator, row) => {
       accumulator[row.status] = (accumulator[row.status] ?? 0) + 1;
       return accumulator;
     }, {});
+
+    const flowSteps: AgentFlowStep[] = agentSteps.map((step) => ({
+      id: step.id,
+      agentName: step.agentName,
+      label: step.label,
+      note: step.note,
+      tone: step.tone as AgentTone,
+      stepOrder: step.stepOrder,
+      transactionId: step.transactionId,
+      createdAt: step.createdAt.toISOString(),
+    }));
 
     response.json({
       currentSlot,
@@ -69,7 +93,38 @@ app.get("/api/overview", async (_request, response) => {
         finalizedAt: transaction.finalizedAt?.toISOString() ?? null,
         slot: serializeBigInt(transaction.slot),
         tipLamports: serializeBigInt(transaction.tipLamports),
+        failureClass: transaction.failureClass,
+        failureReason: transaction.failureReason,
+        attempt: transaction.attempt,
       })),
+      agents: {
+        flowSteps,
+        comms: agentComms
+          .slice()
+          .reverse()
+          .map((comm) => ({
+            id: comm.id,
+            fromAgent: comm.fromAgent,
+            toAgent: comm.toAgent,
+            message: comm.message,
+            transactionId: comm.transactionId,
+            createdAt: comm.createdAt.toISOString(),
+          })),
+        latestDecision: latestDecision
+          ? {
+              id: latestDecision.id,
+              transactionId: latestDecision.transactionId,
+              failureClass: latestDecision.failureClass,
+              reasoning: latestDecision.reasoning,
+              action: latestDecision.action,
+              recommendedTipLamports: latestDecision.recommendedTipLamports.toString(),
+              shouldRetry: latestDecision.shouldRetry,
+              leaderSlotsAway: latestDecision.leaderSlotsAway,
+              createdAt: latestDecision.createdAt.toISOString(),
+              bundleId: latestDecision.transaction.bundleId,
+            }
+          : null,
+      },
     });
   } catch (error) {
     console.error("Failed to load dashboard overview:", error);

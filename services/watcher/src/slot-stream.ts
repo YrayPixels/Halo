@@ -1,9 +1,10 @@
 import bs58 from "bs58";
 import type { Redis } from "ioredis";
-import { advanceTransactionStatus, loadTrackedSignatures } from "@halo/database";
+import { loadTrackedSignatures } from "@halo/database";
 import {
   CommitmentLevel,
   createYellowstoneClient,
+  publishTxEvent,
   REDIS_KEYS,
   writeSubscribeRequest,
   type SubscribeRequest,
@@ -71,22 +72,18 @@ export async function startSlotStream(
 
   const stream = await client.subscribe(createSubscribeRequest());
 
-  const handleTrackedTransaction = (
-    signature: string,
-    slot: string,
-    failed: boolean,
-  ) => {
+  const enqueueTrackedTransaction = (signature: string, slot: string, failed: boolean) => {
     if (!watchlist.has(signature)) {
       return;
     }
 
-    if (failed) {
-      void advanceTransactionStatus(signature, "FAILED");
-      return;
-    }
-
-    void advanceTransactionStatus(signature, "PROCESSED", {
-      slot: BigInt(slot),
+    void publishTxEvent(redis, {
+      signature,
+      slot,
+      status: failed ? "FAILED" : "PROCESSED",
+      observedAt: new Date().toISOString(),
+    }).catch((error: unknown) => {
+      console.error(`Failed to publish tx event for ${signature}:`, error);
     });
   };
 
@@ -112,13 +109,13 @@ export async function startSlotStream(
 
     if (update.transaction?.transaction?.signature) {
       const signature = decodeSignature(update.transaction.transaction.signature);
-      handleTrackedTransaction(signature, update.transaction.slot, false);
+      enqueueTrackedTransaction(signature, update.transaction.slot, false);
       return;
     }
 
     if (update.transactionStatus?.signature) {
       const signature = decodeSignature(update.transactionStatus.signature);
-      handleTrackedTransaction(
+      enqueueTrackedTransaction(
         signature,
         update.transactionStatus.slot,
         Boolean(update.transactionStatus.err),
