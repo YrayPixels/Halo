@@ -75,8 +75,10 @@ app.get("/api/overview", async (_request, response) => {
       nextJitoLeaderIdentity,
       nextJitoLeaderSlotsAway,
       recommendedSubmitSlot,
+      recommendedTip,
       networkMedianPriorityFee,
       tipAccountActivity,
+      slotMetaRaw,
       transactions,
       statusRows,
       agentSteps,
@@ -90,8 +92,10 @@ app.get("/api/overview", async (_request, response) => {
         redis.get(REDIS_KEYS.nextJitoLeaderIdentity),
         redis.get(REDIS_KEYS.nextJitoLeaderSlotsAway),
         redis.get(REDIS_KEYS.recommendedSubmitSlot),
+        redis.get(REDIS_KEYS.recommendedTip),
         redis.get(REDIS_KEYS.networkMedianPriorityFee),
         redis.get(REDIS_KEYS.tipAccountActivity),
+        redis.get(REDIS_KEYS.networkSlotMeta),
         prisma.transaction.findMany({
           orderBy: { createdAt: "desc" },
           take: 20,
@@ -120,6 +124,23 @@ app.get("/api/overview", async (_request, response) => {
       createdAt: step.createdAt.toISOString(),
     }));
 
+    let slotMeta: {
+      slot?: string;
+      blockhash?: string;
+      parentSlot?: string;
+      executedTransactionCount?: string;
+      entriesCount?: string;
+      observedAt?: string;
+    } | null = null;
+
+    if (slotMetaRaw) {
+      try {
+        slotMeta = JSON.parse(slotMetaRaw) as typeof slotMeta;
+      } catch {
+        slotMeta = null;
+      }
+    }
+
     response.json({
       currentSlot,
       network: {
@@ -128,8 +149,10 @@ app.get("/api/overview", async (_request, response) => {
         nextJitoLeaderIdentity,
         nextJitoLeaderSlotsAway,
         recommendedSubmitSlot,
+        recommendedTip,
         networkMedianPriorityFee,
         tipAccountActivity,
+        slotMeta,
       },
       counts,
       transactions: transactions.map((transaction) => ({

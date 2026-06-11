@@ -12,8 +12,19 @@ export function optionalEnv(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+export {
+  enqueueLifecycleSignature,
+  ejectLifecycleSignature,
+  getLifecycleEntry,
+  listLifecycleQueue,
+  updateLifecycleQueueStatus,
+  LIFECYCLE_QUEUE_KEY,
+} from "./lifecycle-queue.js";
+export type { LifecycleQueueEntry, QueuedLifecycleStatus } from "./lifecycle-queue.js";
+
 export const REDIS_KEYS = {
   networkCurrentSlot: "network:current_slot",
+  networkSlotMeta: "network:slot_meta",
   networkCurrentLeader: "network:current_leader",
   nextJitoLeaderSlot: "network:next_jito_leader_slot",
   nextJitoLeaderIdentity: "network:next_jito_leader_identity",

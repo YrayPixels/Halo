@@ -9,7 +9,7 @@ import {
 import bs58 from "bs58";
 import type { Redis } from "ioredis";
 import { prisma } from "@halo/database";
-import { optionalEnv, REDIS_KEYS } from "@halo/shared";
+import { enqueueLifecycleSignature, optionalEnv, REDIS_KEYS } from "@halo/shared";
 import type { FailureClass } from "@halo/types";
 import {
   Bundle,
@@ -336,6 +336,10 @@ export async function submitTransferBundle(options: {
       leaderSlotsAway: leaderWindow.slotsAway,
     },
   });
+
+  if (options.redis) {
+    await enqueueLifecycleSignature(options.redis, signature, "SUBMITTED", currentSlotRaw ?? undefined);
+  }
 
   return bundleId;
 }

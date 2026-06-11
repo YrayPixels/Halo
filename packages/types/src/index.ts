@@ -26,6 +26,12 @@ export type AgentNodeTone = "router" | "raw" | "signal" | "engine" | "inference"
 export interface NetworkSnapshot {
   currentSlot: bigint;
   currentLeader?: string;
+  blockhash?: string;
+  parentSlot?: bigint;
+  parentBlockhash?: string;
+  executedTransactionCount?: bigint;
+  entriesCount?: bigint;
+  blockHeight?: bigint;
   nextJitoLeaderSlot?: bigint;
   nextJitoLeaderIdentity?: string;
   nextJitoLeaderSlotsAway?: number;

@@ -94,6 +94,12 @@ export async function runAgentPipeline(
     toAgent: "failure",
     message: failureNote,
   });
+  await recordComm(redis, {
+    transactionId: transaction.id,
+    fromAgent: "failure",
+    toAgent: "aggregator",
+    message: `Failure signal ready for synthesis: ${failureNote}`,
+  });
 
   const tipRecommendation = await calculateDynamicTip(connection, {
     failureClass: classification.failureClass,
@@ -105,7 +111,7 @@ export async function runAgentPipeline(
     redis.set(REDIS_KEYS.tipAccountActivity, String(tipRecommendation.recentTipActivity)),
   ]);
 
-  const tipNote = `+${Math.round(((tipRecommendation.tipLamports / Number(transaction.tipLamports ?? floorTip)) - 1) * 100)}% tip → ${tipRecommendation.tipLamports.toLocaleString()} lamports`;
+  const tipNote = `+${Math.round(((tipRecommendation.tipLamports / Number(transaction.tipLamports ?? floorTip)) - 1) * 100)}% tip -> ${tipRecommendation.tipLamports.toLocaleString()} lamports`;
   await recordStep({
     transactionId: transaction.id,
     agentName: "tip",
@@ -120,6 +126,12 @@ export async function runAgentPipeline(
     fromAgent: "tip_int",
     toAgent: "retry",
     message: `${tipRecommendation.reasoning} Proposing ${tipRecommendation.tipLamports} lamports.`,
+  });
+  await recordComm(redis, {
+    transactionId: transaction.id,
+    fromAgent: "tip_int",
+    toAgent: "aggregator",
+    message: `Tip signal ready for synthesis: ${tipRecommendation.tipLamports} lamports from ${tipRecommendation.source}.`,
   });
 
   let leaderSlotsAway = 99;
@@ -141,8 +153,8 @@ export async function runAgentPipeline(
 
   const timingNote =
     leaderSlotsAway <= 2
-      ? `Jito leader in ${leaderSlotsAway} slots — submit now`
-      : `Next Jito leader in ${leaderSlotsAway} slots — hold retry`;
+      ? `Jito leader in ${leaderSlotsAway} slots - submit now`
+      : `Next Jito leader in ${leaderSlotsAway} slots - hold retry`;
 
   await recordStep({
     transactionId: transaction.id,
@@ -158,6 +170,12 @@ export async function runAgentPipeline(
     fromAgent: "leader_int",
     toAgent: "timing",
     message: timingNote,
+  });
+  await recordComm(redis, {
+    transactionId: transaction.id,
+    fromAgent: "timing",
+    toAgent: "aggregator",
+    message: `Timing signal ready for synthesis: ${timingNote}`,
   });
 
   const finalDecision = await synthesizeDecision({
@@ -182,7 +200,7 @@ export async function runAgentPipeline(
 
   const retryNote = finalDecision.shouldRetry
     ? `action=${finalDecision.action}, tip=${finalDecision.tipLamports}`
-    : "abort — no retry";
+    : "abort - no retry";
 
   await recordStep({
     transactionId: transaction.id,
@@ -206,6 +224,12 @@ export async function runAgentPipeline(
   await redis.set(REDIS_KEYS.recommendedTip, String(finalDecision.tipLamports));
 
   if (finalDecision.shouldRetry) {
+    await recordComm(redis, {
+      transactionId: transaction.id,
+      fromAgent: "retry",
+      toAgent: "executor",
+      message: `Publishing retry request ${decision.id}: ${finalDecision.action} at ${finalDecision.tipLamports} lamports.`,
+    });
     await publishRetryRequest(redis, {
       parentTransactionId: transaction.id,
       action: finalDecision.action,

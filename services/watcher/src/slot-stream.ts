@@ -1,21 +1,17 @@
-import bs58 from "bs58";
 import type { Redis } from "ioredis";
-import { loadTrackedSignatures } from "@halo/database";
 import {
   CommitmentLevel,
   createYellowstoneClient,
-  publishTxEvent,
   REDIS_KEYS,
   writeSubscribeRequest,
   type SubscribeRequest,
   type SubscribeUpdate,
 } from "@halo/shared";
-import type { StreamTxStatus } from "@halo/shared";
+import type { NetworkSnapshot } from "@halo/types";
 
-function createSubscribeRequest(
-  commitment: CommitmentLevel,
-  overrides: Partial<SubscribeRequest> = {},
-): SubscribeRequest {
+const UPDATE_QUEUE_LIMIT = 500;
+
+function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): SubscribeRequest {
   return {
     accounts: {},
     slots: {
@@ -23,77 +19,123 @@ function createSubscribeRequest(
         filterByCommitment: true,
       },
     },
-    transactions: {
-      all: {
-        vote: false,
-        failed: true,
-        accountInclude: [],
-        accountExclude: [],
-        accountRequired: [],
-      },
-    },
-    transactionsStatus: {
-      all: {
-        vote: false,
-        failed: true,
-        accountInclude: [],
-        accountExclude: [],
-        accountRequired: [],
-      },
-    },
+    transactions: {},
+    transactionsStatus: {},
     blocks: {},
-    blocksMeta: {},
+    // Named filter required — empty {} subscribes to nothing.
+    blocksMeta: {
+      halo: {},
+    },
     entry: {},
     accountsDataSlice: [],
-    commitment,
+    commitment: CommitmentLevel.PROCESSED,
     ...overrides,
   };
 }
 
-function decodeSignature(signature: Uint8Array): string {
-  return bs58.encode(signature);
+function serializeNetworkSnapshot(snapshot: NetworkSnapshot): Record<string, string | number> {
+  const serialized: Record<string, string | number | undefined> = {
+    currentSlot: snapshot.currentSlot.toString(),
+    currentLeader: snapshot.currentLeader,
+    blockhash: snapshot.blockhash,
+    parentSlot: snapshot.parentSlot?.toString(),
+    parentBlockhash: snapshot.parentBlockhash,
+    executedTransactionCount: snapshot.executedTransactionCount?.toString(),
+    entriesCount: snapshot.entriesCount?.toString(),
+    blockHeight: snapshot.blockHeight?.toString(),
+    nextJitoLeaderSlot: snapshot.nextJitoLeaderSlot?.toString(),
+    nextJitoLeaderIdentity: snapshot.nextJitoLeaderIdentity,
+    nextJitoLeaderSlotsAway: snapshot.nextJitoLeaderSlotsAway,
+    recommendedSubmitSlot: snapshot.recommendedSubmitSlot?.toString(),
+    observedAt: snapshot.observedAt.toISOString(),
+  };
+
+  return Object.fromEntries(
+    Object.entries(serialized).filter(([, value]) => value !== undefined),
+  ) as Record<string, string | number>;
 }
 
-function statusForCommitment(commitment: CommitmentLevel): StreamTxStatus {
-  if (commitment === CommitmentLevel.CONFIRMED) {
-    return "CONFIRMED";
-  }
-
-  if (commitment === CommitmentLevel.FINALIZED) {
-    return "FINALIZED";
-  }
-
-  return "PROCESSED";
-}
-
-function stringifyErr(error: unknown): string | undefined {
-  if (!error) {
+function parseOptionalBigInt(value: string | null): bigint | undefined {
+  if (!value) {
     return undefined;
   }
 
-  if (typeof error === "string") {
-    return error;
-  }
-
   try {
-    return JSON.stringify(error);
+    return BigInt(value);
   } catch {
-    return String(error);
+    return undefined;
   }
 }
 
-type BlockMetaUpdate = {
-  blockMeta?: {
-    slot?: string | number | bigint;
-    leader?: string;
-    block?: { leader?: string };
+function parseOptionalNumber(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+async function readCachedLeaderSnapshot(
+  redis: Redis,
+  currentSlot: bigint,
+): Promise<Pick<
+  NetworkSnapshot,
+  | "currentLeader"
+  | "nextJitoLeaderSlot"
+  | "nextJitoLeaderIdentity"
+  | "nextJitoLeaderSlotsAway"
+  | "recommendedSubmitSlot"
+>> {
+  const [
+    cachedCurrentLeader,
+    nextJitoLeaderSlotRaw,
+    nextJitoLeaderIdentity,
+    nextJitoLeaderSlotsAwayRaw,
+    recommendedSubmitSlotRaw,
+  ] = await Promise.all([
+    redis.get(REDIS_KEYS.networkCurrentLeader),
+    redis.get(REDIS_KEYS.nextJitoLeaderSlot),
+    redis.get(REDIS_KEYS.nextJitoLeaderIdentity),
+    redis.get(REDIS_KEYS.nextJitoLeaderSlotsAway),
+    redis.get(REDIS_KEYS.recommendedSubmitSlot),
+  ]);
+
+  const nextJitoLeaderSlot = parseOptionalBigInt(nextJitoLeaderSlotRaw);
+  const recommendedSubmitSlot = parseOptionalBigInt(recommendedSubmitSlotRaw);
+  const recomputedSlotsAway =
+    nextJitoLeaderSlot !== undefined ? Number(nextJitoLeaderSlot - currentSlot) : undefined;
+  const nextJitoLeaderSlotsAway =
+    recomputedSlotsAway !== undefined && Number.isSafeInteger(recomputedSlotsAway)
+      ? recomputedSlotsAway
+      : parseOptionalNumber(nextJitoLeaderSlotsAwayRaw);
+  const currentLeader =
+    cachedCurrentLeader ?? (nextJitoLeaderSlotsAway === 0 ? nextJitoLeaderIdentity ?? undefined : undefined);
+
+  if (nextJitoLeaderSlotsAway !== undefined) {
+    void redis.set(REDIS_KEYS.nextJitoLeaderSlotsAway, String(nextJitoLeaderSlotsAway)).catch(
+      (error: unknown) => {
+        console.error(`Failed to refresh ${REDIS_KEYS.nextJitoLeaderSlotsAway}:`, error);
+      },
+    );
+  }
+
+  return {
+    currentLeader,
+    nextJitoLeaderSlot,
+    nextJitoLeaderIdentity: nextJitoLeaderIdentity ?? undefined,
+    nextJitoLeaderSlotsAway,
+    recommendedSubmitSlot,
   };
-  blocksMeta?: {
-    slot?: string | number | bigint;
-    leader?: string;
-    block?: { leader?: string };
-  };
-};
+}
+
+function logNetworkSnapshot(snapshot: NetworkSnapshot): void {
+  console.log("NetworkSnapshot", serializeNetworkSnapshot(snapshot));
+}
+
+function hasProcessableUpdate(update: SubscribeUpdate): boolean {
+  return Boolean(update.blockMeta);
+}
 
 export async function startSlotStream(
   endpoint: string,
@@ -101,132 +143,133 @@ export async function startSlotStream(
   redis: Redis,
 ): Promise<() => void> {
   const client = createYellowstoneClient(endpoint, token);
-  let watchlist = await loadTrackedSignatures();
-
-  const refreshWatchlist = async () => {
-    watchlist = await loadTrackedSignatures();
-  };
-
-  const watchlistInterval = setInterval(() => {
-    void refreshWatchlist().catch((error: unknown) => {
-      console.error("Failed to refresh watchlist:", error);
-    });
-  }, 3_000);
+  const updateQueue: SubscribeUpdate[] = [];
+  let queueDraining = false;
+  let droppedUpdates = 0;
 
   await client.connect();
 
-  const streams = await Promise.all([
-    client.subscribe(createSubscribeRequest(CommitmentLevel.PROCESSED)),
-    client.subscribe(createSubscribeRequest(CommitmentLevel.CONFIRMED)),
-    client.subscribe(createSubscribeRequest(CommitmentLevel.FINALIZED)),
-  ]);
+  const stream = await client.subscribe(createSubscribeRequest());
+  console.log("Yellowstone transaction stream disabled; tracker follows submitted Jito bundle signatures via RPC");
 
-  const enqueueTrackedTransaction = (
-    signature: string,
-    slot: string,
-    failed: boolean,
-    commitment: CommitmentLevel,
-    errorMessage?: string,
-  ) => {
-    if (!watchlist.has(signature)) {
+  const handleBlockMeta = async (update: SubscribeUpdate) => {
+    const meta = update.blockMeta;
+    if (!meta) {
       return;
     }
 
-    void publishTxEvent(redis, {
-      signature,
-      slot,
-      status: failed ? "FAILED" : statusForCommitment(commitment),
+    const currentSlot = BigInt(meta.slot);
+    const leaderSnapshot = await readCachedLeaderSnapshot(redis, currentSlot);
+    const snapshot = {
+      slot: meta.slot,
+      blockhash: meta.blockhash,
+      parentSlot: meta.parentSlot,
+      parentBlockhash: meta.parentBlockhash,
+      executedTransactionCount: meta.executedTransactionCount,
+      entriesCount: meta.entriesCount,
+      blockHeight: meta.blockHeight?.blockHeight,
       observedAt: new Date().toISOString(),
-      source: "yellowstone",
-      errorMessage,
-    }).catch((error: unknown) => {
-      console.error(`Failed to publish tx event for ${signature}:`, error);
+    };
+    const networkSnapshot: NetworkSnapshot = {
+      currentSlot,
+      blockhash: meta.blockhash,
+      parentSlot: BigInt(meta.parentSlot),
+      parentBlockhash: meta.parentBlockhash,
+      executedTransactionCount: BigInt(meta.executedTransactionCount),
+      entriesCount: BigInt(meta.entriesCount),
+      blockHeight: meta.blockHeight?.blockHeight ? BigInt(meta.blockHeight.blockHeight) : undefined,
+      observedAt: new Date(),
+      ...leaderSnapshot,
+    };
+
+    console.log(
+      `Block ${meta.slot}: ${meta.executedTransactionCount} txs, parent ${meta.parentSlot}, hash ${meta.blockhash.slice(0, 12)}...`,
+    );
+    logNetworkSnapshot(networkSnapshot);
+
+    void redis.set(REDIS_KEYS.networkSlotMeta, JSON.stringify(snapshot)).catch((error: unknown) => {
+      console.error(`Failed to write ${REDIS_KEYS.networkSlotMeta}:`, error);
     });
   };
 
-  const handleBlockMeta = (update: SubscribeUpdate) => {
-    const blockMeta = (update as BlockMetaUpdate).blockMeta ?? (update as BlockMetaUpdate).blocksMeta;
-    const leader = blockMeta?.leader ?? blockMeta?.block?.leader;
+  const processUpdate = async (update: SubscribeUpdate) => {
+    await handleBlockMeta(update);
+  };
 
-    if (!blockMeta?.slot) {
+  const drainQueue = async () => {
+    if (queueDraining) {
       return;
     }
 
-    if (leader) {
-      void redis.set(REDIS_KEYS.networkCurrentLeader, leader).catch((error: unknown) => {
-        console.error(`Failed to write ${REDIS_KEYS.networkCurrentLeader}:`, error);
-      });
+    queueDraining = true;
+    try {
+      while (updateQueue.length > 0) {
+        const update = updateQueue.shift();
+        if (!update) {
+          continue;
+        }
+
+        await processUpdate(update);
+      }
+    } catch (error) {
+      console.error("Yellowstone update worker failed:", error);
+    } finally {
+      queueDraining = false;
+      if (updateQueue.length > 0) {
+        void drainQueue();
+      }
     }
   };
 
-  streams.forEach((stream, index) => {
-    const commitment =
-      index === 0
-        ? CommitmentLevel.PROCESSED
-        : index === 1
-          ? CommitmentLevel.CONFIRMED
-          : CommitmentLevel.FINALIZED;
-
-    stream.on("data", (update: SubscribeUpdate) => {
-      if (update.ping) {
-        void writeSubscribeRequest(stream, createSubscribeRequest(commitment, { ping: { id: 1 } })).catch(
-          (error: unknown) => {
-            console.error("Failed to reply to Yellowstone ping:", error);
-          },
-        );
-        return;
-      }
-
-      if (commitment === CommitmentLevel.PROCESSED && update.slot) {
-        const slot = update.slot.slot;
-        console.log(`Slot: ${slot}`);
-
-        void redis.set(REDIS_KEYS.networkCurrentSlot, slot).catch((error: unknown) => {
-          console.error(`Failed to write ${REDIS_KEYS.networkCurrentSlot}:`, error);
-        });
-        return;
-      }
-
-      handleBlockMeta(update);
-
-      if (update.transaction?.transaction?.signature) {
-        const signature = decodeSignature(update.transaction.transaction.signature);
-        const errorMessage = stringifyErr(update.transaction.transaction.meta?.err);
-        enqueueTrackedTransaction(
-          signature,
-          update.transaction.slot,
-          Boolean(update.transaction.transaction.meta?.err),
-          commitment,
-          errorMessage,
-        );
-        return;
-      }
-
-      if (update.transactionStatus?.signature) {
-        const signature = decodeSignature(update.transactionStatus.signature);
-        enqueueTrackedTransaction(
-          signature,
-          update.transactionStatus.slot,
-          Boolean(update.transactionStatus.err),
-          commitment,
-          stringifyErr(update.transactionStatus.err),
+  const enqueueUpdate = (update: SubscribeUpdate) => {
+    if (updateQueue.length >= UPDATE_QUEUE_LIMIT) {
+      droppedUpdates += 1;
+      if (droppedUpdates === 1 || droppedUpdates % 100 === 0) {
+        console.warn(
+          `Yellowstone update queue full; dropped ${droppedUpdates} block metadata update(s).`,
         );
       }
-    });
+      return;
+    }
 
-    stream.on("error", (error: Error) => {
-      console.error(`Yellowstone ${statusForCommitment(commitment)} stream error:`, error);
-    });
+    updateQueue.push(update);
+    void drainQueue();
+  };
 
-    stream.on("close", () => {
-      console.log(`Yellowstone ${statusForCommitment(commitment)} stream closed`);
-    });
+  stream.on("data", (update: SubscribeUpdate) => {
+    if (update.ping) {
+      void writeSubscribeRequest(stream, createSubscribeRequest({ ping: { id: 1 } })).catch(
+        (error: unknown) => {
+          console.error("Failed to reply to Yellowstone ping:", error);
+        },
+      );
+      return;
+    }
+
+    if (update.slot) {
+      const slot = update.slot.slot;
+      console.log(`Slot: ${slot}`);
+
+      void redis.set(REDIS_KEYS.networkCurrentSlot, slot).catch((error: unknown) => {
+        console.error(`Failed to write ${REDIS_KEYS.networkCurrentSlot}:`, error);
+      });
+      return;
+    }
+
+    if (hasProcessableUpdate(update)) {
+      enqueueUpdate(update);
+    }
+  });
+
+  stream.on("error", (error: Error) => {
+    console.error("Yellowstone stream error:", error);
+  });
+
+  stream.on("close", () => {
+    console.log("Yellowstone stream closed");
   });
 
   return () => {
-    clearInterval(watchlistInterval);
-    for (const stream of streams) {
-      stream.destroy();
-    }
+    stream.destroy();
   };
 }

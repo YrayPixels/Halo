@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { AgentCommMessage, AgentFlowStep } from "@halo/types";
 import { AgentFlow } from "./components/AgentFlow.js";
 import { AgentSwarm } from "./components/AgentSwarm.js";
+import { CongestionHeatmap } from "./components/CongestionHeatmap.js";
 
 type TransactionStatus = "SUBMITTED" | "PROCESSED" | "CONFIRMED" | "FINALIZED" | "FAILED";
 
@@ -62,8 +63,17 @@ interface DashboardOverview {
     nextJitoLeaderIdentity: string | null;
     nextJitoLeaderSlotsAway: string | null;
     recommendedSubmitSlot: string | null;
+    recommendedTip: string | null;
     networkMedianPriorityFee: string | null;
     tipAccountActivity: string | null;
+    slotMeta: {
+      slot?: string;
+      blockhash?: string;
+      parentSlot?: string;
+      executedTransactionCount?: string;
+      entriesCount?: string;
+      observedAt?: string;
+    } | null;
   };
   counts: Partial<Record<TransactionStatus, number>>;
   transactions: DashboardTransaction[];
@@ -82,8 +92,10 @@ const EMPTY_OVERVIEW: DashboardOverview = {
     nextJitoLeaderIdentity: null,
     nextJitoLeaderSlotsAway: null,
     recommendedSubmitSlot: null,
+    recommendedTip: null,
     networkMedianPriorityFee: null,
     tipAccountActivity: null,
+    slotMeta: null,
   },
   counts: {},
   transactions: [],
@@ -189,7 +201,16 @@ function NetworkPanel({ overview, updatedAt }: { overview: DashboardOverview; up
     { label: "Next Jito Leader", value: overview.network.nextJitoLeaderSlot ?? "waiting", accent: true },
     { label: "Leader Distance", value: overview.network.nextJitoLeaderSlotsAway ? `${overview.network.nextJitoLeaderSlotsAway} slots` : "waiting" },
     { label: "Submit Slot", value: overview.network.recommendedSubmitSlot ?? "waiting" },
+    { label: "Recommended Tip", value: overview.network.recommendedTip ?? "waiting", accent: true },
     { label: "Median Fee", value: overview.network.networkMedianPriorityFee ?? "waiting" },
+    {
+      label: "Block Txs",
+      value: overview.network.slotMeta?.executedTransactionCount ?? "waiting",
+    },
+    {
+      label: "Block Hash",
+      value: truncate(overview.network.slotMeta?.blockhash ?? null, 6),
+    },
     { label: "Submitted", value: String(overview.counts.SUBMITTED ?? 0) },
     { label: "Processed", value: String(overview.counts.PROCESSED ?? 0), dot: "warning" as const },
     { label: "Confirmed", value: String(overview.counts.CONFIRMED ?? 0), dot: "success" as const },
@@ -583,6 +604,10 @@ export function App() {
 
         <section id="network">
           <NetworkPanel overview={overview} updatedAt={updatedAt} />
+        </section>
+
+        <section id="heatmap">
+          <CongestionHeatmap slotMeta={overview.network.slotMeta} />
         </section>
 
         <section id="agents" className="space-y-6">

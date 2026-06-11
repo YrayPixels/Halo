@@ -4,57 +4,28 @@ import { Redis } from "ioredis";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { advanceTransactionStatus, loadTrackedSignatures } from "@halo/database";
-import { optionalEnv } from "@halo/shared";
+import { loadTrackedSignatures } from "@halo/database";
+import { enqueueLifecycleSignature, listLifecycleQueue, optionalEnv } from "@halo/shared";
 import type { TransactionStatus } from "@halo/types";
-import { startEventConsumer } from "./consume-events.js";
+import { hydrateLifecycleQueue, startEventConsumer } from "./consume-events.js";
+import { promoteLifecycleQueue } from "./promote-queue.js";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 config({ path: resolve(rootDir, ".env") });
 
-async function pollSignatureStatuses(
-  connection: Connection,
+async function syncWatchlistToQueue(
+  redis: Redis,
   watchlist: Map<string, TransactionStatus>,
 ): Promise<void> {
-  if (watchlist.size === 0) {
-    return;
-  }
+  const queued = new Set((await listLifecycleQueue(redis)).map((entry) => entry.signature));
 
-  const signatures = [...watchlist.keys()];
-  const response = await connection.getSignatureStatuses(signatures, {
-    searchTransactionHistory: true,
-  });
-
-  for (let index = 0; index < signatures.length; index += 1) {
-    const signature = signatures[index]!;
-    const status = response.value[index];
-
-    if (!status) {
-      continue;
-    }
-
-    const slot =
-      status.slot !== null && status.slot !== undefined ? BigInt(status.slot) : undefined;
-
-    if (status.err) {
-      await advanceTransactionStatus(signature, "FAILED", {
-        slot,
-        errorMessage: JSON.stringify(status.err),
-        source: "rpc",
-      });
-      continue;
-    }
-
-    const confirmationStatus = status.confirmationStatus;
-
-    if (confirmationStatus === "finalized") {
-      await advanceTransactionStatus(signature, "FINALIZED", { slot, source: "rpc" });
-      continue;
-    }
-
-    if (confirmationStatus === "confirmed") {
-      await advanceTransactionStatus(signature, "CONFIRMED", { slot, source: "rpc" });
+  for (const [signature, status] of watchlist) {
+    if (
+      (status === "SUBMITTED" || status === "PROCESSED" || status === "CONFIRMED") &&
+      !queued.has(signature)
+    ) {
+      await enqueueLifecycleSignature(redis, signature, status);
     }
   }
 }
@@ -71,21 +42,25 @@ async function main(): Promise<void> {
   console.log(`Solana RPC: ${rpcUrl}`);
   console.log(`Redis: ${redisUrl}`);
   console.log(`Watching ${watchlist.size} active signature(s)`);
+  console.log(`Lifecycle queue: Yellowstone ingress + RPC promotion`);
   console.log(`Consuming lifecycle events from Redis stream on ${hostname()}`);
+
+  await hydrateLifecycleQueue(redis, watchlist);
 
   const stopEventConsumer = await startEventConsumer(redis);
 
   const refreshWatchlist = async () => {
     watchlist = await loadTrackedSignatures();
+    await syncWatchlistToQueue(redis, watchlist);
   };
 
-  void pollSignatureStatuses(connection, watchlist).catch((error: unknown) => {
-    console.error("Initial signature poll failed:", error);
+  void promoteLifecycleQueue(connection, redis).catch((error: unknown) => {
+    console.error("Initial lifecycle promotion failed:", error);
   });
 
   const pollInterval = setInterval(() => {
-    void pollSignatureStatuses(connection, watchlist).catch((error: unknown) => {
-      console.error("Signature poll failed:", error);
+    void promoteLifecycleQueue(connection, redis).catch((error: unknown) => {
+      console.error("Lifecycle promotion failed:", error);
     });
   }, 2_000);
 
