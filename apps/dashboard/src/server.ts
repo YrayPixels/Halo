@@ -2,6 +2,7 @@ import { config } from "dotenv";
 import { PublicKey } from "@solana/web3.js";
 import express from "express";
 import { Redis } from "ioredis";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
@@ -12,7 +13,14 @@ import {
   prisma,
 } from "@halo/database";
 import type { AgentFlowStep, AgentTone } from "@halo/types";
-import { enqueueLifecycleSignature, optionalEnv, REDIS_KEYS } from "@halo/shared";
+import {
+  enqueueLifecycleSignature,
+  optionalEnv,
+  parseRetryRequestEvent,
+  parseTxEvent,
+  REDIS_KEYS,
+  REDIS_STREAMS,
+} from "@halo/shared";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const rootDir = resolve(appDir, "../..");
@@ -50,6 +58,7 @@ interface TransactionRow {
   tipAccountActivity: bigint | null;
   failureClass: string | null;
   failureReason: string | null;
+  errorMessage: string | null;
   bundleFailureCode: string | null;
   bundleFailureSource: string | null;
   attempt: number;
@@ -60,12 +69,76 @@ interface TransactionRow {
   leaderSlotsAway: number | null;
 }
 
+interface DashboardLogEntry {
+  id: string;
+  timestamp: string;
+  system: string;
+  level: "info" | "warning" | "error";
+  category: string;
+  message: string;
+  transactionId?: string;
+  details?: Record<string, string | number | boolean | null>;
+}
+
+type StreamMessage = [id: string, fields: string[]];
+
 function serializeBigInt(value: bigint | number | null): string | null {
   if (value === null) {
     return null;
   }
 
   return value.toString();
+}
+
+function parseOptionalBigInt(value: string | null): bigint | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    return BigInt(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseOptionalInteger(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function serializeLogDetails(
+  details: Record<string, string | number | boolean | bigint | null | undefined>,
+): Record<string, string | number | boolean | null> {
+  return Object.fromEntries(
+    Object.entries(details).flatMap(([key, value]) => {
+      if (value === undefined) {
+        return [];
+      }
+
+      return [[key, typeof value === "bigint" ? value.toString() : value]];
+    }),
+  );
+}
+
+function inferTransactionLevel(status: string): DashboardLogEntry["level"] {
+  if (status === "FAILED") {
+    return "error";
+  }
+
+  if (status === "PROCESSED" || status === "CONFIRMED") {
+    return "warning";
+  }
+
+  return "info";
+}
+
+async function readRecentStream(stream: string, limit: number): Promise<StreamMessage[]> {
+  return redis.xrevrange(stream, "+", "-", "COUNT", limit) as Promise<StreamMessage[]>;
 }
 
 function validateBase58PublicKey(value: unknown, fieldName: string): string {
@@ -107,7 +180,23 @@ app.post("/api/wallet-test/register", async (request, response) => {
     const wallet = validateBase58PublicKey(request.body?.wallet, "wallet");
     const destination = validateBase58PublicKey(request.body?.destination, "destination");
     const lamports = validateLamports(request.body?.lamports);
-    const currentSlot = await redis.get(REDIS_KEYS.networkCurrentSlot);
+    const [
+      currentSlot,
+      recommendedTip,
+      networkMedianPriorityFee,
+      tipAccountActivity,
+      nextJitoLeaderSlot,
+      nextJitoLeaderIdentity,
+      nextJitoLeaderSlotsAway,
+    ] = await Promise.all([
+      redis.get(REDIS_KEYS.networkCurrentSlot),
+      redis.get(REDIS_KEYS.recommendedTip),
+      redis.get(REDIS_KEYS.networkMedianPriorityFee),
+      redis.get(REDIS_KEYS.tipAccountActivity),
+      redis.get(REDIS_KEYS.nextJitoLeaderSlot),
+      redis.get(REDIS_KEYS.nextJitoLeaderIdentity),
+      redis.get(REDIS_KEYS.nextJitoLeaderSlotsAway),
+    ]);
     const existing = await prisma.transaction.findFirst({ where: { signature } });
 
     if (!existing) {
@@ -116,10 +205,16 @@ app.post("/api/wallet-test/register", async (request, response) => {
           status: "SUBMITTED",
           signature,
           bundleId: `wallet-${signature.slice(0, 12)}`,
+          tipLamports: parseOptionalBigInt(recommendedTip),
           tipSource: `wallet_test:${wallet}->${destination}:${lamports}`,
+          networkMedianFee: parseOptionalBigInt(networkMedianPriorityFee),
+          tipAccountActivity: parseOptionalBigInt(tipAccountActivity),
           attempt: 1,
           maxAttempts: 1,
-          submittedSlot: currentSlot ? BigInt(currentSlot) : undefined,
+          submittedSlot: parseOptionalBigInt(currentSlot),
+          targetLeaderSlot: parseOptionalBigInt(nextJitoLeaderSlot),
+          targetLeaderIdentity: nextJitoLeaderIdentity ?? undefined,
+          leaderSlotsAway: parseOptionalInteger(nextJitoLeaderSlotsAway),
         },
       });
     }
@@ -130,6 +225,225 @@ app.post("/api/wallet-test/register", async (request, response) => {
     response.status(400).json({
       error: error instanceof Error ? error.message : "Failed to register wallet transaction",
     });
+  }
+});
+
+app.post("/api/wallet-test/failure-demo", async (_request, response) => {
+  try {
+    const [
+      currentSlot,
+      recommendedTip,
+      networkMedianPriorityFee,
+      tipAccountActivity,
+      nextJitoLeaderSlot,
+      nextJitoLeaderIdentity,
+      nextJitoLeaderSlotsAway,
+    ] = await Promise.all([
+      redis.get(REDIS_KEYS.networkCurrentSlot),
+      redis.get(REDIS_KEYS.recommendedTip),
+      redis.get(REDIS_KEYS.networkMedianPriorityFee),
+      redis.get(REDIS_KEYS.tipAccountActivity),
+      redis.get(REDIS_KEYS.nextJitoLeaderSlot),
+      redis.get(REDIS_KEYS.nextJitoLeaderIdentity),
+      redis.get(REDIS_KEYS.nextJitoLeaderSlotsAway),
+    ]);
+    const currentSlotBigInt = parseOptionalBigInt(currentSlot);
+    const bundleId = `demo-failure-${randomUUID().slice(0, 8)}`;
+    const transaction = await prisma.transaction.create({
+      data: {
+        status: "FAILED",
+        bundleId,
+        tipLamports: parseOptionalBigInt(recommendedTip),
+        tipSource: "dashboard_failure_demo",
+        networkMedianFee: parseOptionalBigInt(networkMedianPriorityFee),
+        tipAccountActivity: parseOptionalBigInt(tipAccountActivity),
+        errorMessage: "BlockhashNotFound: dashboard failure demo expired the test bundle blockhash",
+        bundleFailureCode: "DEMO_BLOCKHASH_EXPIRED",
+        bundleFailureSource: "dashboard",
+        attempt: 1,
+        maxAttempts: 1,
+        submittedSlot: currentSlotBigInt ? currentSlotBigInt - 120n : undefined,
+        targetLeaderSlot: parseOptionalBigInt(nextJitoLeaderSlot),
+        targetLeaderIdentity: nextJitoLeaderIdentity ?? undefined,
+        leaderSlotsAway: parseOptionalInteger(nextJitoLeaderSlotsAway),
+      },
+    });
+
+    response.json({ ok: true, transactionId: transaction.id, bundleId });
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : "Failed to create demo failure",
+    });
+  }
+});
+
+app.get("/api/logs", async (request, response) => {
+  try {
+    const requestedSystem = typeof request.query.system === "string" ? request.query.system : "all";
+    const limit = Math.min(Math.max(Number(request.query.limit ?? 150), 25), 300);
+    const perSourceLimit = Math.max(30, Math.ceil(limit / 3));
+
+    const [
+      agentComms,
+      agentSteps,
+      agentDecisions,
+      transactions,
+      txEvents,
+      retryRequests,
+    ] = await Promise.all([
+      prisma.agentComm.findMany({
+        orderBy: { createdAt: "desc" },
+        take: perSourceLimit,
+      }),
+      prisma.agentStep.findMany({
+        orderBy: { createdAt: "desc" },
+        take: perSourceLimit,
+      }),
+      prisma.agentDecision.findMany({
+        orderBy: { createdAt: "desc" },
+        take: perSourceLimit,
+        include: {
+          transaction: {
+            select: {
+              bundleId: true,
+              signature: true,
+            },
+          },
+        },
+      }),
+      prisma.transaction.findMany({
+        orderBy: { createdAt: "desc" },
+        take: perSourceLimit,
+      }),
+      readRecentStream(REDIS_STREAMS.txEvents, perSourceLimit),
+      readRecentStream(REDIS_STREAMS.retryRequests, perSourceLimit),
+    ]);
+
+    const logs: DashboardLogEntry[] = [
+      ...agentComms.map((comm) => ({
+        id: `agent-comm:${comm.id}`,
+        timestamp: comm.createdAt.toISOString(),
+        system: comm.fromAgent,
+        level: "info" as const,
+        category: "agent_comm",
+        message: `${comm.fromAgent} -> ${comm.toAgent}: ${comm.message}`,
+        transactionId: comm.transactionId ?? undefined,
+        details: serializeLogDetails({
+          toAgent: comm.toAgent,
+        }),
+      })),
+      ...agentSteps.map((step) => ({
+        id: `agent-step:${step.id}`,
+        timestamp: step.createdAt.toISOString(),
+        system: step.agentName,
+        level: step.tone === "danger" ? "error" as const : step.tone === "warning" ? "warning" as const : "info" as const,
+        category: "agent_step",
+        message: `${step.label}: ${step.note}`,
+        transactionId: step.transactionId,
+        details: serializeLogDetails({
+          stepOrder: step.stepOrder,
+          tone: step.tone,
+        }),
+      })),
+      ...agentDecisions.map((decision) => ({
+        id: `agent-decision:${decision.id}`,
+        timestamp: decision.createdAt.toISOString(),
+        system: "orchestrator",
+        level: decision.shouldRetry ? "warning" as const : "error" as const,
+        category: "agent_decision",
+        message: `${decision.action}: ${decision.reasoning}`,
+        transactionId: decision.transactionId,
+        details: serializeLogDetails({
+          failureClass: decision.failureClass,
+          recommendedTipLamports: decision.recommendedTipLamports,
+          shouldRetry: decision.shouldRetry,
+          leaderSlotsAway: decision.leaderSlotsAway,
+          bundleId: decision.transaction.bundleId,
+          signature: decision.transaction.signature,
+        }),
+      })),
+      ...transactions.map((transaction) => ({
+        id: `transaction:${transaction.id}`,
+        timestamp: transaction.createdAt.toISOString(),
+        system: "database",
+        level: inferTransactionLevel(transaction.status),
+        category: "transaction_lifecycle",
+        message: `Transaction ${transaction.status}${transaction.failureReason ? `: ${transaction.failureReason}` : ""}`,
+        transactionId: transaction.id,
+        details: serializeLogDetails({
+          signature: transaction.signature,
+          bundleId: transaction.bundleId,
+          status: transaction.status,
+          attempt: transaction.attempt,
+          maxAttempts: transaction.maxAttempts,
+          errorMessage: transaction.errorMessage,
+          failureClass: transaction.failureClass,
+          failureSource: transaction.bundleFailureSource,
+          slot: transaction.slot,
+        }),
+      })),
+      ...txEvents.flatMap(([id, fields]) => {
+        const event = parseTxEvent(fields);
+
+        if (!event) {
+          return [];
+        }
+
+        return [{
+          id: `tx-event:${id}`,
+          timestamp: event.observedAt,
+          system: event.source,
+          level: event.status === "FAILED" ? "error" as const : "info" as const,
+          category: "tx_stream",
+          message: `${event.status} transaction ${event.signature.slice(0, 12)}... at slot ${event.slot}`,
+          details: serializeLogDetails({
+            signature: event.signature,
+            slot: event.slot,
+            source: event.source,
+            errorMessage: event.errorMessage,
+          }),
+        }];
+      }),
+      ...retryRequests.flatMap(([id, fields]) => {
+        const event = parseRetryRequestEvent(fields);
+
+        if (!event) {
+          return [];
+        }
+
+        return [{
+          id: `retry-request:${id}`,
+          timestamp: event.observedAt,
+          system: "executor",
+          level: "warning" as const,
+          category: "retry_request",
+          message: `${event.action} with ${event.tipLamports} lamports`,
+          transactionId: event.parentTransactionId,
+          details: serializeLogDetails({
+            decisionId: event.decisionId,
+            waitForLeader: event.waitForLeader,
+          }),
+        }];
+      }),
+    ];
+
+    const systems = Array.from(new Set(logs.map((log) => log.system))).sort((left, right) =>
+      left.localeCompare(right),
+    );
+    const filteredLogs =
+      requestedSystem === "all"
+        ? logs
+        : logs.filter((log) => log.system.toLowerCase() === requestedSystem.toLowerCase());
+
+    response.json({
+      systems,
+      logs: filteredLogs
+        .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+        .slice(0, limit),
+    });
+  } catch (error) {
+    console.error("Failed to load dashboard logs:", error);
+    response.status(500).json({ error: "Failed to load dashboard logs" });
   }
 });
 
@@ -147,7 +461,7 @@ app.get("/api/overview", async (_request, response) => {
       tipAccountActivity,
       slotMetaRaw,
       transactions,
-      statusRows,
+      countRows,
       agentSteps,
       agentComms,
       latestDecision,
@@ -168,17 +482,42 @@ app.get("/api/overview", async (_request, response) => {
           take: 20,
         }) as Promise<TransactionRow[]>,
         prisma.transaction.findMany({
-          select: { status: true },
+          select: {
+            status: true,
+            processedAt: true,
+            confirmedAt: true,
+            finalizedAt: true,
+          },
         }),
         getLatestAgentFlow(),
         getRecentAgentComms(30),
         getLatestAgentDecision(),
       ]);
 
-    const counts = statusRows.reduce<Record<string, number>>((accumulator, row) => {
-      accumulator[row.status] = (accumulator[row.status] ?? 0) + 1;
-      return accumulator;
-    }, {});
+    const counts = countRows.reduce<Record<string, number>>(
+      (accumulator, row) => {
+        accumulator.SUBMITTED += 1;
+
+        if (row.processedAt || row.confirmedAt || row.finalizedAt || ["PROCESSED", "CONFIRMED", "FINALIZED"].includes(row.status)) {
+          accumulator.PROCESSED += 1;
+        }
+
+        if (row.confirmedAt || row.finalizedAt || ["CONFIRMED", "FINALIZED"].includes(row.status)) {
+          accumulator.CONFIRMED += 1;
+        }
+
+        if (row.finalizedAt || row.status === "FINALIZED") {
+          accumulator.FINALIZED += 1;
+        }
+
+        if (row.status === "FAILED") {
+          accumulator.FAILED += 1;
+        }
+
+        return accumulator;
+      },
+      { SUBMITTED: 0, PROCESSED: 0, CONFIRMED: 0, FINALIZED: 0, FAILED: 0 },
+    );
 
     const flowSteps: AgentFlowStep[] = agentSteps.map((step) => ({
       id: step.id,

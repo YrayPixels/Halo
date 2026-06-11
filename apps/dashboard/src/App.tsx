@@ -4,6 +4,7 @@ import type { AgentCommMessage, AgentFlowStep } from "@halo/types";
 import { AgentFlow } from "./components/AgentFlow.js";
 import { AgentSwarm } from "./components/AgentSwarm.js";
 import { CongestionHeatmap } from "./components/CongestionHeatmap.js";
+import { LogsPage } from "./components/LogsPage.js";
 import { WalletTestTransaction } from "./components/WalletTestTransaction.js";
 
 type TransactionStatus = "SUBMITTED" | "PROCESSED" | "CONFIRMED" | "FINALIZED" | "FAILED";
@@ -108,6 +109,11 @@ const EMPTY_OVERVIEW: DashboardOverview = {
 };
 
 const LIFECYCLE: TransactionStatus[] = ["SUBMITTED", "PROCESSED", "CONFIRMED", "FINALIZED"];
+type DashboardPage = "overview" | "logs";
+
+function getDashboardPage(): DashboardPage {
+  return window.location.hash === "#logs" ? "logs" : "overview";
+}
 
 function truncate(value: string | null, size = 8): string {
   if (!value) {
@@ -473,6 +479,7 @@ export function App() {
   const [overview, setOverview] = useState<DashboardOverview>(EMPTY_OVERVIEW);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState<DashboardPage>(getDashboardPage);
 
   useEffect(() => {
     let cancelled = false;
@@ -507,6 +514,15 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    function handleHashChange() {
+      setPage(getDashboardPage());
+    }
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
   const latestTransaction = overview.transactions[0];
   const finalizedCount = overview.counts.FINALIZED ?? 0;
   const submittedCount = overview.transactions.length;
@@ -539,6 +555,9 @@ export function App() {
             <a className="transition hover:text-foreground" href="#agents">Agents</a>
             <a className="transition hover:text-foreground" href="#bundles">Bundles</a>
             <a className="transition hover:text-foreground" href="#transactions">Transactions</a>
+            <a className={page === "logs" ? "text-foreground" : "transition hover:text-foreground"} href="#logs">
+              Logs
+            </a>
           </nav>
           <div className="mono flex items-center gap-2 text-xs text-success">
             <StatusDot tone={error ? "danger" : "success"} />
@@ -554,59 +573,65 @@ export function App() {
           </div>
         )}
 
-        <section id="wallet" className="grid gap-4 lg:grid-cols-[420px_1fr]">
-          <div>
-            <WalletTestTransaction />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <MetricCard label="Current slot" value={overview.currentSlot ?? "waiting"} tone="primary" />
-            <MetricCard label="Tracked rows" value={String(overview.transactions.length)} tone="accent" />
-            <MetricCard label="Finalized" value={String(finalizedCount)} tone="success" />
-            <MetricCard label="Land rate" value={landedRate} delta="local DB sample" tone="accent" />
-          </div>
-        </section>
+        {page === "logs" ? (
+          <LogsPage />
+        ) : (
+          <>
+            <section id="wallet" className="grid gap-4 lg:grid-cols-[420px_1fr]">
+              <div>
+                <WalletTestTransaction />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <MetricCard label="Current slot" value={overview.currentSlot ?? "waiting"} tone="primary" />
+                <MetricCard label="Tracked rows" value={String(overview.transactions.length)} tone="accent" />
+                <MetricCard label="Finalized" value={String(finalizedCount)} tone="success" />
+                <MetricCard label="Land rate" value={landedRate} delta="local DB sample" tone="accent" />
+              </div>
+            </section>
 
-        <section id="network">
-          <NetworkPanel overview={overview} updatedAt={updatedAt} />
-        </section>
+            <section id="network">
+              <NetworkPanel overview={overview} updatedAt={updatedAt} />
+            </section>
 
-        <section id="heatmap">
-          <CongestionHeatmap slotMeta={overview.network.slotMeta} />
-        </section>
+            <section id="heatmap">
+              <CongestionHeatmap slotMeta={overview.network.slotMeta} />
+            </section>
 
-        <section id="agents" className="space-y-6">
-          <AgentSwarm comms={overview.agents.comms} />
-          <div className="grid gap-6 lg:grid-cols-2">
-            <AgentFlow steps={overview.agents.flowSteps} />
-            <div className="space-y-6">
-              <BundleTimeline transaction={latestTransaction} />
-              <RecentFailures transactions={overview.transactions} />
-              {overview.agents.latestDecision && (
-                <div className="panel p-6">
-                  <h3 className="text-sm uppercase tracking-[0.2em] text-muted-foreground">Latest Agent Decision</h3>
-                  <p className="mono mt-3 text-xs text-accent">{overview.agents.latestDecision.action}</p>
-                  <p className="mono mt-2 text-sm text-muted-foreground">
-                    {overview.agents.latestDecision.reasoning}
-                  </p>
-                  <div className="mono mt-4 flex flex-wrap gap-4 text-[10px] uppercase tracking-widest text-muted-foreground">
-                    <span>tip {overview.agents.latestDecision.recommendedTipLamports}</span>
-                    <span>leader {overview.agents.latestDecision.leaderSlotsAway ?? "-"} slots</span>
-                    <span>retry {overview.agents.latestDecision.shouldRetry ? "yes" : "no"}</span>
-                    <span>bundle {truncate(overview.agents.latestDecision.bundleId)}</span>
-                  </div>
+            <section id="agents" className="space-y-6">
+              <AgentSwarm comms={overview.agents.comms} />
+              <div className="grid gap-6 lg:grid-cols-2">
+                <AgentFlow steps={overview.agents.flowSteps} />
+                <div className="space-y-6">
+                  <BundleTimeline transaction={latestTransaction} />
+                  <RecentFailures transactions={overview.transactions} />
+                  {overview.agents.latestDecision && (
+                    <div className="panel p-6">
+                      <h3 className="text-sm uppercase tracking-[0.2em] text-muted-foreground">Latest Agent Decision</h3>
+                      <p className="mono mt-3 text-xs text-accent">{overview.agents.latestDecision.action}</p>
+                      <p className="mono mt-2 text-sm text-muted-foreground">
+                        {overview.agents.latestDecision.reasoning}
+                      </p>
+                      <div className="mono mt-4 flex flex-wrap gap-4 text-[10px] uppercase tracking-widest text-muted-foreground">
+                        <span>tip {overview.agents.latestDecision.recommendedTipLamports}</span>
+                        <span>leader {overview.agents.latestDecision.leaderSlotsAway ?? "-"} slots</span>
+                        <span>retry {overview.agents.latestDecision.shouldRetry ? "yes" : "no"}</span>
+                        <span>bundle {truncate(overview.agents.latestDecision.bundleId)}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
-        </section>
+              </div>
+            </section>
 
-        <section id="bundles" className="hidden">
-          <BundleTimeline transaction={latestTransaction} />
-        </section>
+            <section id="bundles" className="hidden">
+              <BundleTimeline transaction={latestTransaction} />
+            </section>
 
-        <section id="transactions">
-          <TransactionTable transactions={overview.transactions} />
-        </section>
+            <section id="transactions">
+              <TransactionTable transactions={overview.transactions} />
+            </section>
+          </>
+        )}
 
         <footer className="mono flex flex-wrap items-center justify-between gap-4 border-t border-border/60 pb-12 pt-6 text-xs text-muted-foreground">
           <div>HALO · Solana execution observability</div>

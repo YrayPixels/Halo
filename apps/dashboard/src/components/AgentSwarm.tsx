@@ -163,9 +163,11 @@ function buildGraph(comms: AgentCommMessage[]): { nodes: Node[]; edges: Edge[]; 
     };
   });
 
-  const liveNodes = BASE_NODES.filter((node) => activeIds.has(node.id));
-  const nodes = comms.length > 0 ? [...liveNodes, ...dynamicNodes] : BASE_NODES;
-  const edges = comms.length > 0 ? [...edgeByKey.values()] : IDLE_EDGES;
+  const nodes = [...BASE_NODES, ...dynamicNodes];
+  const liveEdges = [...edgeByKey.values()];
+  const liveEdgeKeys = new Set(liveEdges.map((edge) => `${edge.from}->${edge.to}`));
+  const idleEdges = IDLE_EDGES.filter((edge) => !liveEdgeKeys.has(`${edge.from}->${edge.to}`));
+  const edges = comms.length > 0 ? [...idleEdges, ...liveEdges] : IDLE_EDGES;
 
   return { nodes, edges, logs: recentLogs };
 }
@@ -193,8 +195,8 @@ export function AgentSwarm({ comms }: { comms: AgentCommMessage[] }) {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-[1fr_320px]">
-        <div className="relative h-[560px] bg-[radial-gradient(circle_at_50%_50%,oklch(0.22_0.04_240/0.4),transparent_70%)]">
+      <div className="grid lg:h-[560px] lg:grid-cols-[1fr_320px]">
+        <div className="relative h-[560px] lg:h-full bg-[radial-gradient(circle_at_50%_50%,oklch(0.22_0.04_240/0.4),transparent_70%)]">
           <div
             className="absolute inset-0 opacity-[0.07]"
             style={{
@@ -311,7 +313,7 @@ export function AgentSwarm({ comms }: { comms: AgentCommMessage[] }) {
           })}
         </div>
 
-        <div className="flex flex-col border-l border-border/50 bg-surface-elevated/30 p-4">
+        <div className="flex min-h-0 flex-col overflow-hidden border-l border-border/50 bg-surface-elevated/30 p-4">
           <div className="mb-4 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-success" />
@@ -320,7 +322,7 @@ export function AgentSwarm({ comms }: { comms: AgentCommMessage[] }) {
             <span className="mono text-[10px] text-muted-foreground">{logs.length} msgs</span>
           </div>
 
-          <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             {hasLiveData ? (
               logs.map((message) => (
                 <div key={message.id} className="animate-fade-in space-y-1" style={{ animationFillMode: "both" }}>

@@ -56,12 +56,27 @@ async function registerSignature(options: {
   }
 }
 
+async function createFailureDemo(): Promise<{ transactionId: string; bundleId: string }> {
+  const response = await fetch("/api/wallet-test/failure-demo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error ?? "Failed to create demo failure");
+  }
+
+  return (await response.json()) as { transactionId: string; bundleId: string };
+}
+
 export function WalletTestTransaction() {
   const { connected, publicKey, signTransaction } = useWallet();
   const [config, setConfig] = useState<WalletTestConfig | null>(null);
   const [status, setStatus] = useState("Load the wallet config, then connect your browser wallet.");
   const [signature, setSignature] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [failureDemoBusy, setFailureDemoBusy] = useState(false);
 
   const walletAddress = publicKey?.toBase58() ?? null;
   const canSubmit = Boolean(config?.destination && config.lamports > 0 && connected && publicKey && signTransaction);
@@ -155,6 +170,22 @@ export function WalletTestTransaction() {
     }
   };
 
+  const triggerFailureDemo = async () => {
+    setFailureDemoBusy(true);
+    setSignature(null);
+
+    try {
+      const demo = await createFailureDemo();
+      setStatus(
+        `Demo failure ${demo.bundleId} created. Intelligence should classify it and update the agent swarm within a few seconds.`,
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to create demo failure");
+    } finally {
+      setFailureDemoBusy(false);
+    }
+  };
+
   return (
     <div className="panel p-5">
       <div className="mb-4 flex items-start justify-between gap-4">
@@ -185,10 +216,18 @@ export function WalletTestTransaction() {
       <button
         className="mono mt-4 w-full rounded-lg bg-gradient-solar px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-background transition disabled:cursor-not-allowed disabled:opacity-40"
         type="button"
-        disabled={!canSubmit || busy}
+        disabled={!canSubmit || busy || failureDemoBusy}
         onClick={() => void sendTestTransaction()}
       >
         {busy ? "Submitting..." : "Simulate + Send"}
+      </button>
+      <button
+        className="mono mt-3 w-full rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-danger transition hover:bg-danger/15 disabled:cursor-not-allowed disabled:opacity-40"
+        type="button"
+        disabled={busy || failureDemoBusy}
+        onClick={() => void triggerFailureDemo()}
+      >
+        {failureDemoBusy ? "Creating Failure..." : "Test Failed Transaction"}
       </button>
 
       <p className="mono mt-3 text-xs leading-relaxed text-muted-foreground">{status}</p>
