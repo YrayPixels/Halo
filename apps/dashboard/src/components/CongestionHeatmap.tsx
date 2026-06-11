@@ -32,8 +32,19 @@ function formatNumber(value: number): string {
 }
 
 function cellColor(intensity: number): string {
-  const hue = (1 - intensity) * 140;
-  return `oklch(${0.45 + intensity * 0.25} ${0.12 + intensity * 0.1} ${hue})`;
+  if (intensity < 0.25) {
+    return "oklch(0.68 0.16 205)";
+  }
+
+  if (intensity < 0.5) {
+    return "oklch(0.76 0.18 150)";
+  }
+
+  if (intensity < 0.75) {
+    return "oklch(0.82 0.18 85)";
+  }
+
+  return "oklch(0.68 0.22 25)";
 }
 
 export function CongestionHeatmap({ slotMeta }: { slotMeta: SlotMeta }) {
@@ -63,14 +74,15 @@ export function CongestionHeatmap({ slotMeta }: { slotMeta: SlotMeta }) {
 
   const stats = useMemo(() => {
     const txCounts = samples.map((sample) => sample.txCount);
+    const min = txCounts.length > 0 ? Math.min(...txCounts) : 0;
     const peak = txCounts.length > 0 ? Math.max(...txCounts) : 0;
     const average =
       txCounts.length > 0
         ? Math.round(txCounts.reduce((sum, value) => sum + value, 0) / txCounts.length)
         : 0;
-    const scale = Math.max(peak, 2_000);
+    const spread = peak - min;
 
-    return { average, peak, scale };
+    return { average, min, peak, spread };
   }, [samples]);
 
   const cells = useMemo(
@@ -90,7 +102,13 @@ export function CongestionHeatmap({ slotMeta }: { slotMeta: SlotMeta }) {
         </div>
         <div className="mono flex items-center gap-2 text-[10px] text-muted-foreground">
           low
-          <div className="h-2 w-20 rounded-full bg-gradient-to-r from-success via-warning to-danger" />
+          <div
+            className="h-2 w-24 rounded-full"
+            style={{
+              background:
+                "linear-gradient(90deg, oklch(0.68 0.16 205), oklch(0.76 0.18 150), oklch(0.82 0.18 85), oklch(0.68 0.22 25))",
+            }}
+          />
           high
         </div>
       </div>
@@ -122,18 +140,22 @@ export function CongestionHeatmap({ slotMeta }: { slotMeta: SlotMeta }) {
 
       <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))` }}>
         {cells.map((sample, index) => {
-          const intensity = sample ? Math.min(1, sample.txCount / stats.scale) : 0;
+          const intensity =
+            sample && stats.spread > 0 ? Math.min(1, Math.max(0, (sample.txCount - stats.min) / stats.spread)) : 0;
+
           return (
             <div
               key={sample?.slot ?? `empty-${index}`}
-              className="aspect-square rounded-sm border border-background/20 transition-colors duration-500"
+              className="aspect-square rounded-sm border border-background/25 shadow-[0_0_10px_oklch(0_0_0/0.18)] transition-colors duration-500"
               style={{
                 background: sample ? cellColor(intensity) : "oklch(0.2 0.02 250 / 0.35)",
-                opacity: sample ? 0.45 + intensity * 0.55 : 0.25,
+                opacity: sample ? 0.75 + intensity * 0.25 : 0.25,
               }}
               title={
                 sample
-                  ? `Slot ${sample.slot}: ${formatNumber(sample.txCount)} txs${
+                  ? `Slot ${sample.slot}: ${formatNumber(sample.txCount)} txs (${Math.round(
+                      intensity * 100,
+                    )}% recent-window congestion)${
                       sample.entriesCount !== null ? `, ${formatNumber(sample.entriesCount)} entries` : ""
                     }`
                   : "waiting for block metadata"
