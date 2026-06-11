@@ -19,15 +19,33 @@ async function recordTelemetryComm(
   });
 }
 
+function booleanEnv(name: string, fallback = false): boolean {
+  const value = process.env[name];
+  if (value === undefined) {
+    return fallback;
+  }
+
+  return value === "true" || value === "1";
+}
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number(optionalEnv(name, String(fallback)));
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
 export async function refreshTipTelemetry(redis: Redis): Promise<void> {
   const rpcUrl = optionalEnv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com");
   const floorTip = Number(optionalEnv("JITO_MIN_TIP_LAMPORTS", optionalEnv("JITO_TIP_LAMPORTS", "0")));
+  const includeTipAccountActivity = booleanEnv("TIP_AGENT_SAMPLE_TIP_ACCOUNTS", false);
   const connection = new Connection(rpcUrl, "confirmed");
 
   const recommendation = await calculateDynamicTip(connection, {
-    failureClass: "UNKNOWN",
-    currentTip: BigInt(floorTip),
+    mode: "steady",
     floorTip,
+    medianFeeMultiplier: positiveIntegerEnv("TIP_AGENT_MEDIAN_FEE_MULTIPLIER", 8),
+    includeTipAccountActivity,
+    tipAccountLimit: positiveIntegerEnv("TIP_AGENT_TIP_ACCOUNT_LIMIT", 2),
+    signaturesPerTipAccount: positiveIntegerEnv("TIP_AGENT_SIGNATURES_PER_ACCOUNT", 2),
   });
 
   await Promise.all([
@@ -39,13 +57,15 @@ export async function refreshTipTelemetry(redis: Redis): Promise<void> {
   await recordTelemetryComm(redis, {
     fromAgent: "tip_ext",
     toAgent: "tip_int",
-    message: `Observed median priority fee ${recommendation.networkMedianFee} lamports and Jito tip-account inflow ${recommendation.recentTipActivity} lamports.`,
+    message: includeTipAccountActivity
+      ? `Observed median priority fee ${recommendation.networkMedianFee} lamports and sampled Jito tip-account inflow ${recommendation.recentTipActivity} lamports.`
+      : `Observed median priority fee ${recommendation.networkMedianFee} lamports; tip-account sampling disabled to avoid RPC rate limits.`,
   });
 
   await recordTelemetryComm(redis, {
     fromAgent: "tip_int",
     toAgent: "aggregator",
-    message: `Steady Tip Agent recommends ${recommendation.tipLamports} lamports from ${recommendation.source}.`,
+    message: `Steady Tip Agent recommends ${recommendation.tipLamports} lamports (${recommendation.reasoning})`,
   });
 
   console.log(`Tip Agent steady recommendation: ${recommendation.tipLamports} lamports`);

@@ -16,6 +16,22 @@ function positiveNumberEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function createNonOverlappingTick(label: string, task: () => Promise<void>): () => void {
+  let running = false;
+
+  return () => {
+    if (running) {
+      console.warn(`${label} tick skipped; previous tick still running`);
+      return;
+    }
+
+    running = true;
+    void task().finally(() => {
+      running = false;
+    });
+  };
+}
+
 async function main(): Promise<void> {
   const redisUrl = optionalEnv("REDIS_URL", "redis://localhost:6379");
   const redis = new Redis(redisUrl);
@@ -24,34 +40,34 @@ async function main(): Promise<void> {
   console.log(`Redis: ${redisUrl}`);
   console.log(`LLM: ${optionalEnv("OPENAI_API_KEY") ? "enabled" : "heuristic fallback"}`);
 
-  const failureTick = async () => {
+  const failureTick = createNonOverlappingTick("Failure processing", async () => {
     try {
       await processPendingFailures(redis);
     } catch (error) {
       console.error("Failure processing tick failed:", error);
     }
-  };
-  const tipTick = async () => {
+  });
+  const tipTick = createNonOverlappingTick("Tip Agent telemetry", async () => {
     try {
       await refreshTipTelemetry(redis);
     } catch (error) {
       console.error("Tip Agent telemetry tick failed:", error);
     }
-  };
-  const leaderTick = async () => {
+  });
+  const leaderTick = createNonOverlappingTick("Leader Agent telemetry", async () => {
     try {
       await refreshLeaderTelemetry(redis);
     } catch (error) {
       console.error("Leader Agent telemetry tick failed:", error);
     }
-  };
+  });
 
-  void failureTick();
-  void tipTick();
-  void leaderTick();
+  failureTick();
+  tipTick();
+  leaderTick();
   const failureInterval = setInterval(() => void failureTick(), 3_000);
-  const tipIntervalMs = positiveNumberEnv("TIP_AGENT_INTERVAL_MS", 30_000);
-  const leaderIntervalMs = positiveNumberEnv("LEADER_AGENT_INTERVAL_MS", 15_000);
+  const tipIntervalMs = positiveNumberEnv("TIP_AGENT_INTERVAL_MS", 120_000);
+  const leaderIntervalMs = positiveNumberEnv("LEADER_AGENT_INTERVAL_MS", 30_000);
   const tipInterval = setInterval(() => void tipTick(), tipIntervalMs);
   const leaderInterval = setInterval(() => void leaderTick(), leaderIntervalMs);
 

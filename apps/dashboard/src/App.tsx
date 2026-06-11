@@ -4,6 +4,7 @@ import type { AgentCommMessage, AgentFlowStep } from "@halo/types";
 import { AgentFlow } from "./components/AgentFlow.js";
 import { AgentSwarm } from "./components/AgentSwarm.js";
 import { CongestionHeatmap } from "./components/CongestionHeatmap.js";
+import { WalletTestTransaction } from "./components/WalletTestTransaction.js";
 
 type TransactionStatus = "SUBMITTED" | "PROCESSED" | "CONFIRMED" | "FINALIZED" | "FAILED";
 
@@ -546,59 +547,22 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl space-y-12 px-6 py-12">
-        <section className="grid items-center gap-10 lg:grid-cols-12">
-          <div className="animate-fade-in lg:col-span-7" style={{ animationFillMode: "both" }}>
-            <div className="mono mb-6 inline-flex items-center gap-2 rounded-full border border-border/70 bg-surface/60 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-              v0.1 · live observability
-            </div>
-            <h2 className="text-5xl font-semibold leading-[0.95] tracking-tight md:text-6xl xl:text-7xl">
-              Solana bundle <br />
-              <span className="text-gradient-solar">lifecycle cockpit</span>
-            </h2>
-            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-muted-foreground">
-              HALO streams Yellowstone slots, submits Jito bundles, and records each lifecycle
-              transition so the executor can learn why bundles land, lag, or fail.
-            </p>
-            {error && (
-              <div className="mono mt-5 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-xs text-danger">
-                {error}
-              </div>
-            )}
+      <main className="mx-auto max-w-7xl space-y-8 px-6 py-8">
+        {error && (
+          <div className="mono rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-xs text-danger">
+            {error}
           </div>
+        )}
 
-          <div className="space-y-4 lg:col-span-5">
-            <div className="panel relative flex h-48 items-center justify-center overflow-hidden">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,oklch(0.78_0.18_65/0.25),transparent_60%)]" />
-              <div
-                className="absolute inset-0 opacity-[0.08]"
-                style={{
-                  backgroundImage:
-                    "linear-gradient(to right, currentColor 1px, transparent 1px), linear-gradient(to bottom, currentColor 1px, transparent 1px)",
-                  backgroundSize: "24px 24px",
-                }}
-              />
-              <div className="relative h-28 w-28 rounded-full bg-gradient-solar shadow-glow">
-                <div className="absolute inset-2 rounded-full bg-background/40 backdrop-blur-sm" />
-                <div className="absolute inset-0 animate-ping rounded-full border border-primary/40" />
-                <div className="absolute -inset-4 rounded-full border border-primary/20" />
-                <div className="absolute -inset-8 rounded-full border border-primary/10" />
-              </div>
-              <div className="mono absolute bottom-3 left-4 text-[10px] uppercase tracking-widest text-muted-foreground">
-                halo.core · day 6
-              </div>
-              <div className="mono absolute right-4 top-3 flex items-center gap-1.5 text-[10px] text-success">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
-                online
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <MetricCard label="Current slot" value={overview.currentSlot ?? "waiting"} tone="primary" />
-              <MetricCard label="Tracked rows" value={String(overview.transactions.length)} tone="accent" />
-              <MetricCard label="Finalized" value={String(finalizedCount)} tone="success" />
-              <MetricCard label="Land rate" value={landedRate} delta="local DB sample" tone="accent" />
-            </div>
+        <section id="wallet" className="grid gap-4 lg:grid-cols-[420px_1fr]">
+          <div>
+            <WalletTestTransaction />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <MetricCard label="Current slot" value={overview.currentSlot ?? "waiting"} tone="primary" />
+            <MetricCard label="Tracked rows" value={String(overview.transactions.length)} tone="accent" />
+            <MetricCard label="Finalized" value={String(finalizedCount)} tone="success" />
+            <MetricCard label="Land rate" value={landedRate} delta="local DB sample" tone="accent" />
           </div>
         </section>
 

@@ -1,4 +1,5 @@
 import { config } from "dotenv";
+import { PublicKey } from "@solana/web3.js";
 import express from "express";
 import { Redis } from "ioredis";
 import { dirname, resolve } from "node:path";
@@ -11,7 +12,7 @@ import {
   prisma,
 } from "@halo/database";
 import type { AgentFlowStep, AgentTone } from "@halo/types";
-import { optionalEnv, REDIS_KEYS } from "@halo/shared";
+import { enqueueLifecycleSignature, optionalEnv, REDIS_KEYS } from "@halo/shared";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const rootDir = resolve(appDir, "../..");
@@ -21,6 +22,7 @@ config({ path: resolve(rootDir, ".env") });
 
 const redis = new Redis(optionalEnv("REDIS_URL", "redis://localhost:6379"));
 const app = express();
+app.use(express.json());
 
 interface TransactionRow {
   id: string;
@@ -65,6 +67,71 @@ function serializeBigInt(value: bigint | number | null): string | null {
 
   return value.toString();
 }
+
+function validateBase58PublicKey(value: unknown, fieldName: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${fieldName} must be a string`);
+  }
+
+  return new PublicKey(value).toBase58();
+}
+
+function validateSignature(value: unknown): string {
+  if (typeof value !== "string" || value.length < 64 || value.length > 128) {
+    throw new Error("signature must be a base58 transaction signature");
+  }
+
+  return value;
+}
+
+function validateLamports(value: unknown): number {
+  const lamports = Number(value);
+  if (!Number.isSafeInteger(lamports) || lamports <= 0) {
+    throw new Error("lamports must be a positive safe integer");
+  }
+
+  return lamports;
+}
+
+app.get("/api/wallet-test/config", (_request, response) => {
+  response.json({
+    rpcUrl: optionalEnv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
+    destination: optionalEnv("WALLET_TEST_DESTINATION", optionalEnv("TRANSFER_DESTINATION", "")),
+    lamports: Number(optionalEnv("WALLET_TEST_LAMPORTS", optionalEnv("TRANSFER_LAMPORTS", "1000"))),
+  });
+});
+
+app.post("/api/wallet-test/register", async (request, response) => {
+  try {
+    const signature = validateSignature(request.body?.signature);
+    const wallet = validateBase58PublicKey(request.body?.wallet, "wallet");
+    const destination = validateBase58PublicKey(request.body?.destination, "destination");
+    const lamports = validateLamports(request.body?.lamports);
+    const currentSlot = await redis.get(REDIS_KEYS.networkCurrentSlot);
+    const existing = await prisma.transaction.findFirst({ where: { signature } });
+
+    if (!existing) {
+      await prisma.transaction.create({
+        data: {
+          status: "SUBMITTED",
+          signature,
+          bundleId: `wallet-${signature.slice(0, 12)}`,
+          tipSource: `wallet_test:${wallet}->${destination}:${lamports}`,
+          attempt: 1,
+          maxAttempts: 1,
+          submittedSlot: currentSlot ? BigInt(currentSlot) : undefined,
+        },
+      });
+    }
+
+    await enqueueLifecycleSignature(redis, signature, "SUBMITTED", currentSlot ?? undefined);
+    response.json({ ok: true, signature });
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : "Failed to register wallet transaction",
+    });
+  }
+});
 
 app.get("/api/overview", async (_request, response) => {
   try {

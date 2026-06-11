@@ -1,34 +1,94 @@
 import { config } from "dotenv";
+import { PublicKey } from "@solana/web3.js";
 import express from "express";
 import { Redis } from "ioredis";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import { getLatestAgentDecision, getLatestAgentFlow, getRecentAgentComms, prisma, } from "@halo/database";
-import { optionalEnv, REDIS_KEYS } from "@halo/shared";
+import { enqueueLifecycleSignature, optionalEnv, REDIS_KEYS } from "@halo/shared";
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const rootDir = resolve(appDir, "../..");
 const port = Number(process.env.PORT ?? 5173);
 config({ path: resolve(rootDir, ".env") });
 const redis = new Redis(optionalEnv("REDIS_URL", "redis://localhost:6379"));
 const app = express();
+app.use(express.json());
 function serializeBigInt(value) {
     if (value === null) {
         return null;
     }
     return value.toString();
 }
+function validateBase58PublicKey(value, fieldName) {
+    if (typeof value !== "string") {
+        throw new Error(`${fieldName} must be a string`);
+    }
+    return new PublicKey(value).toBase58();
+}
+function validateSignature(value) {
+    if (typeof value !== "string" || value.length < 64 || value.length > 128) {
+        throw new Error("signature must be a base58 transaction signature");
+    }
+    return value;
+}
+function validateLamports(value) {
+    const lamports = Number(value);
+    if (!Number.isSafeInteger(lamports) || lamports <= 0) {
+        throw new Error("lamports must be a positive safe integer");
+    }
+    return lamports;
+}
+app.get("/api/wallet-test/config", (_request, response) => {
+    response.json({
+        rpcUrl: optionalEnv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
+        destination: optionalEnv("WALLET_TEST_DESTINATION", optionalEnv("TRANSFER_DESTINATION", "")),
+        lamports: Number(optionalEnv("WALLET_TEST_LAMPORTS", optionalEnv("TRANSFER_LAMPORTS", "1000"))),
+    });
+});
+app.post("/api/wallet-test/register", async (request, response) => {
+    try {
+        const signature = validateSignature(request.body?.signature);
+        const wallet = validateBase58PublicKey(request.body?.wallet, "wallet");
+        const destination = validateBase58PublicKey(request.body?.destination, "destination");
+        const lamports = validateLamports(request.body?.lamports);
+        const currentSlot = await redis.get(REDIS_KEYS.networkCurrentSlot);
+        const existing = await prisma.transaction.findFirst({ where: { signature } });
+        if (!existing) {
+            await prisma.transaction.create({
+                data: {
+                    status: "SUBMITTED",
+                    signature,
+                    bundleId: `wallet-${signature.slice(0, 12)}`,
+                    tipSource: `wallet_test:${wallet}->${destination}:${lamports}`,
+                    attempt: 1,
+                    maxAttempts: 1,
+                    submittedSlot: currentSlot ? BigInt(currentSlot) : undefined,
+                },
+            });
+        }
+        await enqueueLifecycleSignature(redis, signature, "SUBMITTED", currentSlot ?? undefined);
+        response.json({ ok: true, signature });
+    }
+    catch (error) {
+        response.status(400).json({
+            error: error instanceof Error ? error.message : "Failed to register wallet transaction",
+        });
+    }
+});
 app.get("/api/overview", async (_request, response) => {
     try {
-        const [currentSlot, currentLeader, nextJitoLeaderSlot, nextJitoLeaderIdentity, nextJitoLeaderSlotsAway, recommendedSubmitSlot, networkMedianPriorityFee, tipAccountActivity, transactions, statusRows, agentSteps, agentComms, latestDecision,] = await Promise.all([
+        const [currentSlot, currentLeader, nextJitoLeaderSlot, nextJitoLeaderIdentity, nextJitoLeaderSlotsAway, recommendedSubmitSlot, recommendedTip, networkMedianPriorityFee, tipAccountActivity, slotMetaRaw, transactions, statusRows, agentSteps, agentComms, latestDecision,] = await Promise.all([
             redis.get(REDIS_KEYS.networkCurrentSlot),
             redis.get(REDIS_KEYS.networkCurrentLeader),
             redis.get(REDIS_KEYS.nextJitoLeaderSlot),
             redis.get(REDIS_KEYS.nextJitoLeaderIdentity),
             redis.get(REDIS_KEYS.nextJitoLeaderSlotsAway),
             redis.get(REDIS_KEYS.recommendedSubmitSlot),
+            redis.get(REDIS_KEYS.recommendedTip),
             redis.get(REDIS_KEYS.networkMedianPriorityFee),
             redis.get(REDIS_KEYS.tipAccountActivity),
+            redis.get(REDIS_KEYS.networkSlotMeta),
             prisma.transaction.findMany({
                 orderBy: { createdAt: "desc" },
                 take: 20,
@@ -54,6 +114,15 @@ app.get("/api/overview", async (_request, response) => {
             transactionId: step.transactionId,
             createdAt: step.createdAt.toISOString(),
         }));
+        let slotMeta = null;
+        if (slotMetaRaw) {
+            try {
+                slotMeta = JSON.parse(slotMetaRaw);
+            }
+            catch {
+                slotMeta = null;
+            }
+        }
         response.json({
             currentSlot,
             network: {
@@ -62,8 +131,10 @@ app.get("/api/overview", async (_request, response) => {
                 nextJitoLeaderIdentity,
                 nextJitoLeaderSlotsAway,
                 recommendedSubmitSlot,
+                recommendedTip,
                 networkMedianPriorityFee,
                 tipAccountActivity,
+                slotMeta,
             },
             counts,
             transactions: transactions.map((transaction) => ({
