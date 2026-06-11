@@ -63,6 +63,14 @@ export async function startRetryConsumer(
               throw new Error(`Parent transaction ${event.parentTransactionId} not found`);
             }
 
+            if (parent.attempt >= parent.maxAttempts) {
+              console.warn(
+                `Skipping retry for ${parent.id}: attempt ${parent.attempt} reached max ${parent.maxAttempts}`,
+              );
+              await redis.xack(REDIS_STREAMS.retryRequests, REDIS_GROUPS.executor, messageId);
+              continue;
+            }
+
             const bundleId = await submitTransferBundle({
               rpcUrl: options.rpcUrl,
               blockEngineUrl: options.blockEngineUrl,
@@ -73,6 +81,7 @@ export async function startRetryConsumer(
               redis,
               parentTransactionId: parent.id,
               attempt: parent.attempt + 1,
+              maxAttempts: parent.maxAttempts,
               waitForLeader: event.waitForLeader === "true",
               injectExpiredBlockhash: false,
             });

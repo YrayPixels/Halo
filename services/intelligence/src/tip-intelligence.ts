@@ -17,6 +17,49 @@ export interface TipRecommendation {
   reasoning: string;
   networkMedianFee: number;
   recentTipActivity: number;
+  source: string;
+}
+
+async function getRecentTipActivity(connection: Connection): Promise<number> {
+  const samples = await Promise.all(
+    JITO_TIP_ACCOUNTS.map(async (address) => {
+      const tipAccount = new PublicKey(address);
+      const signatures = await connection
+        .getSignaturesForAddress(tipAccount, { limit: 5 }, "confirmed")
+        .catch(() => []);
+
+      const transactions = await Promise.all(
+        signatures.map((signature) =>
+          connection
+            .getParsedTransaction(signature.signature, {
+              commitment: "confirmed",
+              maxSupportedTransactionVersion: 0,
+            })
+            .catch(() => null),
+        ),
+      );
+
+      return transactions.reduce((sum, transaction) => {
+        if (!transaction?.meta) {
+          return sum;
+        }
+
+        const accountIndex = transaction.transaction.message.accountKeys.findIndex(
+          (account) => account.pubkey.toBase58() === address,
+        );
+
+        if (accountIndex < 0) {
+          return sum;
+        }
+
+        const preBalance = transaction.meta.preBalances[accountIndex] ?? 0;
+        const postBalance = transaction.meta.postBalances[accountIndex] ?? 0;
+        return sum + Math.max(0, postBalance - preBalance);
+      }, 0);
+    }),
+  );
+
+  return samples.reduce((sum, value) => sum + value, 0);
 }
 
 export async function calculateDynamicTip(
@@ -34,15 +77,8 @@ export async function calculateDynamicTip(
     .sort((a, b) => a - b);
 
   const networkMedianFee =
-    feeValues.length > 0 ? feeValues[Math.floor(feeValues.length / 2)]! : 1_000;
-
-  const balances = await Promise.all(
-    JITO_TIP_ACCOUNTS.slice(0, 4).map((address) =>
-      connection.getBalance(new PublicKey(address)).catch(() => 0),
-    ),
-  );
-
-  const recentTipActivity = balances.reduce((sum, balance) => sum + balance, 0);
+    feeValues.length > 0 ? feeValues[Math.floor(feeValues.length / 2)]! : 0;
+  const recentTipActivity = await getRecentTipActivity(connection);
   const activityFactor = recentTipActivity > 50_000_000_000 ? 1.35 : recentTipActivity > 20_000_000_000 ? 1.2 : 1.0;
 
   const currentTip = Number(options.currentTip ?? options.floorTip);
@@ -79,8 +115,9 @@ export async function calculateDynamicTip(
 
   return {
     tipLamports,
-    reasoning: `Median prioritization fee ${networkMedianFee} lamports, tip-account activity factor ${activityFactor.toFixed(2)}, failure multiplier ${multiplier.toFixed(2)} → ${tipLamports} lamports.`,
+    reasoning: `Median prioritization fee ${networkMedianFee} lamports, recent Jito tip-account inflow ${recentTipActivity} lamports, activity factor ${activityFactor.toFixed(2)}, failure multiplier ${multiplier.toFixed(2)} -> ${tipLamports} lamports.`,
     networkMedianFee,
     recentTipActivity,
+    source: "recent_prioritization_fees+jito_tip_account_deltas",
   };
 }

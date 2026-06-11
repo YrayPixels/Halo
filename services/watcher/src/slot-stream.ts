@@ -10,8 +10,12 @@ import {
   type SubscribeRequest,
   type SubscribeUpdate,
 } from "@halo/shared";
+import type { StreamTxStatus } from "@halo/shared";
 
-function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): SubscribeRequest {
+function createSubscribeRequest(
+  commitment: CommitmentLevel,
+  overrides: Partial<SubscribeRequest> = {},
+): SubscribeRequest {
   return {
     accounts: {},
     slots: {
@@ -41,7 +45,7 @@ function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): Subs
     blocksMeta: {},
     entry: {},
     accountsDataSlice: [],
-    commitment: CommitmentLevel.PROCESSED,
+    commitment,
     ...overrides,
   };
 }
@@ -49,6 +53,47 @@ function createSubscribeRequest(overrides: Partial<SubscribeRequest> = {}): Subs
 function decodeSignature(signature: Uint8Array): string {
   return bs58.encode(signature);
 }
+
+function statusForCommitment(commitment: CommitmentLevel): StreamTxStatus {
+  if (commitment === CommitmentLevel.CONFIRMED) {
+    return "CONFIRMED";
+  }
+
+  if (commitment === CommitmentLevel.FINALIZED) {
+    return "FINALIZED";
+  }
+
+  return "PROCESSED";
+}
+
+function stringifyErr(error: unknown): string | undefined {
+  if (!error) {
+    return undefined;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+type BlockMetaUpdate = {
+  blockMeta?: {
+    slot?: string | number | bigint;
+    leader?: string;
+    block?: { leader?: string };
+  };
+  blocksMeta?: {
+    slot?: string | number | bigint;
+    leader?: string;
+    block?: { leader?: string };
+  };
+};
 
 export async function startSlotStream(
   endpoint: string,
@@ -70,9 +115,19 @@ export async function startSlotStream(
 
   await client.connect();
 
-  const stream = await client.subscribe(createSubscribeRequest());
+  const streams = await Promise.all([
+    client.subscribe(createSubscribeRequest(CommitmentLevel.PROCESSED)),
+    client.subscribe(createSubscribeRequest(CommitmentLevel.CONFIRMED)),
+    client.subscribe(createSubscribeRequest(CommitmentLevel.FINALIZED)),
+  ]);
 
-  const enqueueTrackedTransaction = (signature: string, slot: string, failed: boolean) => {
+  const enqueueTrackedTransaction = (
+    signature: string,
+    slot: string,
+    failed: boolean,
+    commitment: CommitmentLevel,
+    errorMessage?: string,
+  ) => {
     if (!watchlist.has(signature)) {
       return;
     }
@@ -80,59 +135,98 @@ export async function startSlotStream(
     void publishTxEvent(redis, {
       signature,
       slot,
-      status: failed ? "FAILED" : "PROCESSED",
+      status: failed ? "FAILED" : statusForCommitment(commitment),
       observedAt: new Date().toISOString(),
+      source: "yellowstone",
+      errorMessage,
     }).catch((error: unknown) => {
       console.error(`Failed to publish tx event for ${signature}:`, error);
     });
   };
 
-  stream.on("data", (update: SubscribeUpdate) => {
-    if (update.ping) {
-      void writeSubscribeRequest(stream, createSubscribeRequest({ ping: { id: 1 } })).catch(
-        (error: unknown) => {
-          console.error("Failed to reply to Yellowstone ping:", error);
-        },
-      );
+  const handleBlockMeta = (update: SubscribeUpdate) => {
+    const blockMeta = (update as BlockMetaUpdate).blockMeta ?? (update as BlockMetaUpdate).blocksMeta;
+    const leader = blockMeta?.leader ?? blockMeta?.block?.leader;
+
+    if (!blockMeta?.slot) {
       return;
     }
 
-    if (update.slot) {
-      const slot = update.slot.slot;
-      console.log(`Slot: ${slot}`);
-
-      void redis.set(REDIS_KEYS.networkCurrentSlot, slot).catch((error: unknown) => {
-        console.error(`Failed to write ${REDIS_KEYS.networkCurrentSlot}:`, error);
+    if (leader) {
+      void redis.set(REDIS_KEYS.networkCurrentLeader, leader).catch((error: unknown) => {
+        console.error(`Failed to write ${REDIS_KEYS.networkCurrentLeader}:`, error);
       });
-      return;
     }
+  };
 
-    if (update.transaction?.transaction?.signature) {
-      const signature = decodeSignature(update.transaction.transaction.signature);
-      enqueueTrackedTransaction(signature, update.transaction.slot, false);
-      return;
-    }
+  streams.forEach((stream, index) => {
+    const commitment =
+      index === 0
+        ? CommitmentLevel.PROCESSED
+        : index === 1
+          ? CommitmentLevel.CONFIRMED
+          : CommitmentLevel.FINALIZED;
 
-    if (update.transactionStatus?.signature) {
-      const signature = decodeSignature(update.transactionStatus.signature);
-      enqueueTrackedTransaction(
-        signature,
-        update.transactionStatus.slot,
-        Boolean(update.transactionStatus.err),
-      );
-    }
-  });
+    stream.on("data", (update: SubscribeUpdate) => {
+      if (update.ping) {
+        void writeSubscribeRequest(stream, createSubscribeRequest(commitment, { ping: { id: 1 } })).catch(
+          (error: unknown) => {
+            console.error("Failed to reply to Yellowstone ping:", error);
+          },
+        );
+        return;
+      }
 
-  stream.on("error", (error: Error) => {
-    console.error("Yellowstone stream error:", error);
-  });
+      if (commitment === CommitmentLevel.PROCESSED && update.slot) {
+        const slot = update.slot.slot;
+        console.log(`Slot: ${slot}`);
 
-  stream.on("close", () => {
-    console.log("Yellowstone stream closed");
+        void redis.set(REDIS_KEYS.networkCurrentSlot, slot).catch((error: unknown) => {
+          console.error(`Failed to write ${REDIS_KEYS.networkCurrentSlot}:`, error);
+        });
+        return;
+      }
+
+      handleBlockMeta(update);
+
+      if (update.transaction?.transaction?.signature) {
+        const signature = decodeSignature(update.transaction.transaction.signature);
+        const errorMessage = stringifyErr(update.transaction.transaction.meta?.err);
+        enqueueTrackedTransaction(
+          signature,
+          update.transaction.slot,
+          Boolean(update.transaction.transaction.meta?.err),
+          commitment,
+          errorMessage,
+        );
+        return;
+      }
+
+      if (update.transactionStatus?.signature) {
+        const signature = decodeSignature(update.transactionStatus.signature);
+        enqueueTrackedTransaction(
+          signature,
+          update.transactionStatus.slot,
+          Boolean(update.transactionStatus.err),
+          commitment,
+          stringifyErr(update.transactionStatus.err),
+        );
+      }
+    });
+
+    stream.on("error", (error: Error) => {
+      console.error(`Yellowstone ${statusForCommitment(commitment)} stream error:`, error);
+    });
+
+    stream.on("close", () => {
+      console.log(`Yellowstone ${statusForCommitment(commitment)} stream closed`);
+    });
   });
 
   return () => {
     clearInterval(watchlistInterval);
-    stream.destroy();
+    for (const stream of streams) {
+      stream.destroy();
+    }
   };
 }

@@ -16,10 +16,30 @@ interface DashboardTransaction {
   confirmedAt: string | null;
   finalizedAt: string | null;
   slot: string | null;
+  processedSlot: string | null;
+  confirmedSlot: string | null;
+  finalizedSlot: string | null;
+  processedViaStream: boolean;
+  confirmedViaStream: boolean;
+  finalizedViaStream: boolean;
+  submittedToProcessedMs: number | null;
+  processedToConfirmedMs: number | null;
+  confirmedToFinalizedMs: number | null;
+  submittedToFinalizedMs: number | null;
   tipLamports: string | null;
+  tipSource: string | null;
+  networkMedianFee: string | null;
+  tipAccountActivity: string | null;
   failureClass: string | null;
   failureReason: string | null;
+  bundleFailureCode: string | null;
+  bundleFailureSource: string | null;
   attempt: number;
+  maxAttempts: number;
+  submittedSlot: string | null;
+  targetLeaderSlot: string | null;
+  targetLeaderIdentity: string | null;
+  leaderSlotsAway: number | null;
 }
 
 interface AgentDecisionSummary {
@@ -29,12 +49,22 @@ interface AgentDecisionSummary {
   action: string;
   recommendedTipLamports: string;
   shouldRetry: boolean;
+  leaderSlotsAway: number | null;
   bundleId: string | null;
   createdAt: string;
 }
 
 interface DashboardOverview {
   currentSlot: string | null;
+  network: {
+    currentLeader: string | null;
+    nextJitoLeaderSlot: string | null;
+    nextJitoLeaderIdentity: string | null;
+    nextJitoLeaderSlotsAway: string | null;
+    recommendedSubmitSlot: string | null;
+    networkMedianPriorityFee: string | null;
+    tipAccountActivity: string | null;
+  };
   counts: Partial<Record<TransactionStatus, number>>;
   transactions: DashboardTransaction[];
   agents: {
@@ -46,6 +76,15 @@ interface DashboardOverview {
 
 const EMPTY_OVERVIEW: DashboardOverview = {
   currentSlot: null,
+  network: {
+    currentLeader: null,
+    nextJitoLeaderSlot: null,
+    nextJitoLeaderIdentity: null,
+    nextJitoLeaderSlotsAway: null,
+    recommendedSubmitSlot: null,
+    networkMedianPriorityFee: null,
+    tipAccountActivity: null,
+  },
   counts: {},
   transactions: [],
   agents: {
@@ -79,6 +118,18 @@ function formatDate(value: string | null): string {
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(value));
+}
+
+function formatMs(value: number | null): string {
+  if (value === null) {
+    return "-";
+  }
+
+  if (value < 1000) {
+    return `${value}ms`;
+  }
+
+  return `${(value / 1000).toFixed(2)}s`;
 }
 
 function statusTone(status: TransactionStatus): string {
@@ -134,6 +185,11 @@ function MetricCard({
 function NetworkPanel({ overview, updatedAt }: { overview: DashboardOverview; updatedAt: Date | null }) {
   const stats = [
     { label: "Current Slot", value: overview.currentSlot ?? "waiting", accent: true },
+    { label: "Current Leader", value: truncate(overview.network.currentLeader, 6) },
+    { label: "Next Jito Leader", value: overview.network.nextJitoLeaderSlot ?? "waiting", accent: true },
+    { label: "Leader Distance", value: overview.network.nextJitoLeaderSlotsAway ? `${overview.network.nextJitoLeaderSlotsAway} slots` : "waiting" },
+    { label: "Submit Slot", value: overview.network.recommendedSubmitSlot ?? "waiting" },
+    { label: "Median Fee", value: overview.network.networkMedianPriorityFee ?? "waiting" },
     { label: "Submitted", value: String(overview.counts.SUBMITTED ?? 0) },
     { label: "Processed", value: String(overview.counts.PROCESSED ?? 0), dot: "warning" as const },
     { label: "Confirmed", value: String(overview.counts.CONFIRMED ?? 0), dot: "success" as const },
@@ -153,7 +209,7 @@ function NetworkPanel({ overview, updatedAt }: { overview: DashboardOverview; up
           LIVE {updatedAt ? `· ${formatDate(updatedAt.toISOString())}` : ""}
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
         {stats.map((stat) => (
           <motion.div
             key={stat.label}
@@ -183,6 +239,36 @@ function NetworkPanel({ overview, updatedAt }: { overview: DashboardOverview; up
 function BundleTimeline({ transaction }: { transaction?: DashboardTransaction }) {
   const activeIndex = transaction ? LIFECYCLE.indexOf(transaction.status) : -1;
   const safeIndex = transaction?.status === "FAILED" ? 1 : activeIndex;
+  const stages = [
+    {
+      label: "Submitted",
+      time: transaction?.createdAt ?? null,
+      slot: transaction?.submittedSlot ?? null,
+      stream: true,
+      delta: null,
+    },
+    {
+      label: "Processed",
+      time: transaction?.processedAt ?? null,
+      slot: transaction?.processedSlot ?? null,
+      stream: transaction?.processedViaStream ?? false,
+      delta: transaction?.submittedToProcessedMs ?? null,
+    },
+    {
+      label: "Confirmed",
+      time: transaction?.confirmedAt ?? null,
+      slot: transaction?.confirmedSlot ?? null,
+      stream: transaction?.confirmedViaStream ?? false,
+      delta: transaction?.processedToConfirmedMs ?? null,
+    },
+    {
+      label: "Finalized",
+      time: transaction?.finalizedAt ?? null,
+      slot: transaction?.finalizedSlot ?? null,
+      stream: transaction?.finalizedViaStream ?? false,
+      delta: transaction?.confirmedToFinalizedMs ?? null,
+    },
+  ];
 
   return (
     <div className="panel p-6">
@@ -229,6 +315,24 @@ function BundleTimeline({ transaction }: { transaction?: DashboardTransaction })
           })}
         </div>
       </div>
+      <div className="mt-6 grid gap-3 md:grid-cols-2">
+        {stages.map((stage) => (
+          <div key={stage.label} className="rounded-lg border border-border/50 bg-surface-elevated/50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                {stage.label}
+              </span>
+              <span className={`mono text-[10px] ${stage.stream ? "text-success" : "text-warning"}`}>
+                {stage.stream ? "stream" : "rpc/fallback"}
+              </span>
+            </div>
+            <div className="mono mt-2 text-xs text-foreground">{formatDate(stage.time)}</div>
+            <div className="mono mt-1 text-[10px] text-muted-foreground">
+              slot {stage.slot ?? "-"} | delta {formatMs(stage.delta)}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -274,22 +378,25 @@ function TransactionTable({ transactions }: { transactions: DashboardTransaction
         <p className="mono mt-1 text-xs text-muted-foreground/70">Postgres lifecycle records</p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left">
+        <table className="w-full min-w-[1120px] text-left">
           <thead className="mono border-b border-border/60 text-[10px] uppercase tracking-widest text-muted-foreground">
             <tr>
               <th className="px-6 py-3">Status</th>
               <th className="px-6 py-3">Signature</th>
               <th className="px-6 py-3">Bundle</th>
               <th className="px-6 py-3">Slot</th>
+              <th className="px-6 py-3">Leader</th>
               <th className="px-6 py-3">Tip</th>
               <th className="px-6 py-3">Attempt</th>
+              <th className="px-6 py-3">Stream</th>
+              <th className="px-6 py-3">Latency</th>
               <th className="px-6 py-3">Created</th>
             </tr>
           </thead>
           <tbody>
             {transactions.length === 0 ? (
               <tr>
-                <td className="px-6 py-8 text-sm text-muted-foreground" colSpan={7}>
+                <td className="px-6 py-8 text-sm text-muted-foreground" colSpan={10}>
                   No lifecycle rows yet. Run `pnpm dev:executor` to submit a bundle.
                 </td>
               </tr>
@@ -309,10 +416,23 @@ function TransactionTable({ transactions }: { transactions: DashboardTransaction
                     {transaction.slot ?? "-"}
                   </td>
                   <td className="mono px-6 py-4 text-xs text-muted-foreground">
-                    {transaction.tipLamports ?? "-"}
+                    <div>{transaction.targetLeaderSlot ?? "-"}</div>
+                    <div className="text-[10px]">{truncate(transaction.targetLeaderIdentity, 5)}</div>
                   </td>
                   <td className="mono px-6 py-4 text-xs text-muted-foreground">
-                    {transaction.attempt}
+                    <div>{transaction.tipLamports ?? "-"}</div>
+                    <div className="text-[10px]">{transaction.tipSource ?? "-"}</div>
+                  </td>
+                  <td className="mono px-6 py-4 text-xs text-muted-foreground">
+                    {transaction.attempt}/{transaction.maxAttempts}
+                  </td>
+                  <td className="mono px-6 py-4 text-xs text-muted-foreground">
+                    P:{transaction.processedViaStream ? "Y" : "N"} C:{transaction.confirmedViaStream ? "Y" : "N"} F:
+                    {transaction.finalizedViaStream ? "Y" : "N"}
+                  </td>
+                  <td className="mono px-6 py-4 text-xs text-muted-foreground">
+                    <div>S-&gt;P {formatMs(transaction.submittedToProcessedMs)}</div>
+                    <div>P-&gt;C {formatMs(transaction.processedToConfirmedMs)}</div>
                   </td>
                   <td className="mono px-6 py-4 text-xs text-muted-foreground">
                     {formatDate(transaction.createdAt)}
@@ -481,6 +601,7 @@ export function App() {
                   </p>
                   <div className="mono mt-4 flex flex-wrap gap-4 text-[10px] uppercase tracking-widest text-muted-foreground">
                     <span>tip {overview.agents.latestDecision.recommendedTipLamports}</span>
+                    <span>leader {overview.agents.latestDecision.leaderSlotsAway ?? "-"} slots</span>
                     <span>retry {overview.agents.latestDecision.shouldRetry ? "yes" : "no"}</span>
                     <span>bundle {truncate(overview.agents.latestDecision.bundleId)}</span>
                   </div>

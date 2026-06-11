@@ -34,22 +34,27 @@ async function pollSignatureStatuses(
       continue;
     }
 
+    const slot =
+      status.slot !== null && status.slot !== undefined ? BigInt(status.slot) : undefined;
+
     if (status.err) {
-      await advanceTransactionStatus(signature, "FAILED");
+      await advanceTransactionStatus(signature, "FAILED", {
+        slot,
+        errorMessage: JSON.stringify(status.err),
+        source: "rpc",
+      });
       continue;
     }
 
-    const slot =
-      status.slot !== null && status.slot !== undefined ? BigInt(status.slot) : undefined;
     const confirmationStatus = status.confirmationStatus;
 
     if (confirmationStatus === "finalized") {
-      await advanceTransactionStatus(signature, "FINALIZED", { slot });
+      await advanceTransactionStatus(signature, "FINALIZED", { slot, source: "rpc" });
       continue;
     }
 
     if (confirmationStatus === "confirmed") {
-      await advanceTransactionStatus(signature, "CONFIRMED", { slot });
+      await advanceTransactionStatus(signature, "CONFIRMED", { slot, source: "rpc" });
     }
   }
 }

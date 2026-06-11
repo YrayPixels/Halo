@@ -14,7 +14,14 @@ export function optionalEnv(name: string, fallback = ""): string {
 
 export const REDIS_KEYS = {
   networkCurrentSlot: "network:current_slot",
+  networkCurrentLeader: "network:current_leader",
+  nextJitoLeaderSlot: "network:next_jito_leader_slot",
+  nextJitoLeaderIdentity: "network:next_jito_leader_identity",
+  nextJitoLeaderSlotsAway: "network:next_jito_leader_slots_away",
+  recommendedSubmitSlot: "network:recommended_submit_slot",
   recommendedTip: "network:recommended_tip",
+  networkMedianPriorityFee: "network:median_priority_fee",
+  tipAccountActivity: "network:tip_account_activity",
 } as const;
 
 export {

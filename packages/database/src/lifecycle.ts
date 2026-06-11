@@ -45,7 +45,12 @@ export async function loadTrackedSignatures(): Promise<Map<string, TransactionSt
 export async function advanceTransactionStatus(
   signature: string,
   nextStatus: TransactionStatus,
-  options: { slot?: bigint; errorMessage?: string } = {},
+  options: {
+    slot?: bigint;
+    errorMessage?: string;
+    observedAt?: Date;
+    source?: "yellowstone" | "rpc";
+  } = {},
 ): Promise<boolean> {
   const existing = await prisma.transaction.findFirst({
     where: { signature },
@@ -61,7 +66,31 @@ export async function advanceTransactionStatus(
     return false;
   }
 
-  const now = new Date();
+  const now = options.observedAt ?? new Date();
+  const processedAt =
+    nextStatus === "PROCESSED" || nextStatus === "CONFIRMED" || nextStatus === "FINALIZED"
+      ? (existing.processedAt ?? now)
+      : existing.processedAt;
+  const confirmedAt =
+    nextStatus === "CONFIRMED" || nextStatus === "FINALIZED"
+      ? (existing.confirmedAt ?? now)
+      : existing.confirmedAt;
+  const finalizedAt = nextStatus === "FINALIZED" ? (existing.finalizedAt ?? now) : existing.finalizedAt;
+
+  const submittedToProcessedMs = processedAt
+    ? Math.max(0, processedAt.getTime() - existing.createdAt.getTime())
+    : existing.submittedToProcessedMs;
+  const processedToConfirmedMs =
+    processedAt && confirmedAt
+      ? Math.max(0, confirmedAt.getTime() - processedAt.getTime())
+      : existing.processedToConfirmedMs;
+  const confirmedToFinalizedMs =
+    confirmedAt && finalizedAt
+      ? Math.max(0, finalizedAt.getTime() - confirmedAt.getTime())
+      : existing.confirmedToFinalizedMs;
+  const submittedToFinalizedMs = finalizedAt
+    ? Math.max(0, finalizedAt.getTime() - existing.createdAt.getTime())
+    : existing.submittedToFinalizedMs;
 
   await prisma.transaction.update({
     where: { id: existing.id },
@@ -69,15 +98,35 @@ export async function advanceTransactionStatus(
       status: nextStatus,
       slot: options.slot ?? existing.slot,
       errorMessage: nextStatus === "FAILED" ? options.errorMessage ?? existing.errorMessage : existing.errorMessage,
-      processedAt:
+      processedAt,
+      confirmedAt,
+      finalizedAt,
+      processedSlot:
         nextStatus === "PROCESSED" || nextStatus === "CONFIRMED" || nextStatus === "FINALIZED"
-          ? (existing.processedAt ?? now)
-          : existing.processedAt,
-      confirmedAt:
+          ? (existing.processedSlot ?? options.slot)
+          : existing.processedSlot,
+      confirmedSlot:
         nextStatus === "CONFIRMED" || nextStatus === "FINALIZED"
-          ? (existing.confirmedAt ?? now)
-          : existing.confirmedAt,
-      finalizedAt: nextStatus === "FINALIZED" ? now : existing.finalizedAt,
+          ? (existing.confirmedSlot ?? options.slot)
+          : existing.confirmedSlot,
+      finalizedSlot: nextStatus === "FINALIZED" ? (options.slot ?? existing.finalizedSlot) : existing.finalizedSlot,
+      processedViaStream:
+        options.source === "yellowstone" &&
+        (nextStatus === "PROCESSED" || nextStatus === "CONFIRMED" || nextStatus === "FINALIZED")
+          ? true
+          : existing.processedViaStream,
+      confirmedViaStream:
+        options.source === "yellowstone" && (nextStatus === "CONFIRMED" || nextStatus === "FINALIZED")
+          ? true
+          : existing.confirmedViaStream,
+      finalizedViaStream:
+        options.source === "yellowstone" && nextStatus === "FINALIZED"
+          ? true
+          : existing.finalizedViaStream,
+      submittedToProcessedMs,
+      processedToConfirmedMs,
+      confirmedToFinalizedMs,
+      submittedToFinalizedMs,
     },
   });
 
@@ -90,6 +139,10 @@ export async function markTransactionFailed(
   failureClass: FailureClass,
   failureReason: string,
   errorMessage?: string,
+  options: {
+    bundleFailureCode?: string;
+    bundleFailureSource?: string;
+  } = {},
 ): Promise<void> {
   await prisma.transaction.update({
     where: { id: transactionId },
@@ -98,6 +151,8 @@ export async function markTransactionFailed(
       failureClass,
       failureReason,
       errorMessage,
+      bundleFailureCode: options.bundleFailureCode,
+      bundleFailureSource: options.bundleFailureSource,
     },
   });
 }

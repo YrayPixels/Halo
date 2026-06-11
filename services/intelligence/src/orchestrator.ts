@@ -52,13 +52,14 @@ export async function runAgentPipeline(
 ): Promise<void> {
   const rpcUrl = optionalEnv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com");
   const blockEngineUrl = optionalEnv("JITO_BLOCK_ENGINE_URL", "mainnet.block-engine.jito.wtf");
-  const floorTip = Number(optionalEnv("JITO_TIP_LAMPORTS", "10000"));
+  const floorTip = Number(optionalEnv("JITO_MIN_TIP_LAMPORTS", optionalEnv("JITO_TIP_LAMPORTS", "0")));
   const connection = new Connection(rpcUrl, "confirmed");
 
   const currentSlotRaw = await redis.get(REDIS_KEYS.networkCurrentSlot);
   const currentSlot = currentSlotRaw ? BigInt(currentSlotRaw) : null;
+  const currentBlockHeight = BigInt(await connection.getBlockHeight("confirmed"));
 
-  const context = buildFailureContext(transaction, currentSlot);
+  const context = buildFailureContext(transaction, currentSlot, currentBlockHeight);
   const classification = classifyFailure(context);
 
   if (!transaction.failureClass) {
@@ -99,6 +100,10 @@ export async function runAgentPipeline(
     currentTip: transaction.tipLamports,
     floorTip,
   });
+  await Promise.all([
+    redis.set(REDIS_KEYS.networkMedianPriorityFee, String(tipRecommendation.networkMedianFee)),
+    redis.set(REDIS_KEYS.tipAccountActivity, String(tipRecommendation.recentTipActivity)),
+  ]);
 
   const tipNote = `+${Math.round(((tipRecommendation.tipLamports / Number(transaction.tipLamports ?? floorTip)) - 1) * 100)}% tip → ${tipRecommendation.tipLamports.toLocaleString()} lamports`;
   await recordStep({
@@ -123,6 +128,12 @@ export async function runAgentPipeline(
     const leader = await searcher.getNextScheduledLeader();
     if (leader.ok) {
       leaderSlotsAway = leader.value.nextLeaderSlot - leader.value.currentSlot;
+      await Promise.all([
+        redis.set(REDIS_KEYS.nextJitoLeaderSlot, String(leader.value.nextLeaderSlot)),
+        redis.set(REDIS_KEYS.nextJitoLeaderIdentity, leader.value.nextLeaderIdentity),
+        redis.set(REDIS_KEYS.nextJitoLeaderSlotsAway, String(leaderSlotsAway)),
+        redis.set(REDIS_KEYS.recommendedSubmitSlot, String(leader.value.nextLeaderSlot)),
+      ]);
     }
   } catch (error) {
     console.warn("Failed to fetch Jito leader schedule:", error);
@@ -156,6 +167,7 @@ export async function runAgentPipeline(
     recommendedTipLamports: tipRecommendation.tipLamports,
     leaderSlotsAway,
     attempt: transaction.attempt,
+    maxAttempts: transaction.maxAttempts,
     failureAgentNote: failureNote,
     tipAgentNote: tipRecommendation.reasoning,
     timingAgentNote: timingNote,

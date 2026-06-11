@@ -50,8 +50,10 @@ export async function startEventConsumer(redis: Redis): Promise<() => void> {
               slot: BigInt(event.slot),
               errorMessage:
                 event.status === "FAILED"
-                  ? "Transaction failed on-chain (stream observation)"
+                  ? event.errorMessage ?? "Transaction failed on-chain (stream observation)"
                   : undefined,
+              observedAt: new Date(event.observedAt),
+              source: event.source,
             });
             await redis.xack(REDIS_STREAMS.txEvents, REDIS_GROUPS.tracker, messageId);
           } catch (error) {

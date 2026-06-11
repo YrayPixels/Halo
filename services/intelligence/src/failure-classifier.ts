@@ -3,6 +3,7 @@ import type { Transaction } from "@halo/database";
 
 export interface FailureContext {
   currentSlot: bigint | null;
+  currentBlockHeight: bigint | null;
   submittedSlot: bigint | null;
   lastValidBlockHeight: bigint | null;
   ageMs: number;
@@ -14,11 +15,13 @@ export interface FailureContext {
 export function buildFailureContext(
   transaction: Transaction,
   currentSlot: bigint | null,
+  currentBlockHeight: bigint | null = null,
 ): FailureContext {
   const ageMs = Date.now() - transaction.createdAt.getTime();
 
   return {
     currentSlot,
+    currentBlockHeight,
     submittedSlot: transaction.submittedSlot,
     lastValidBlockHeight: transaction.lastValidBlockHeight,
     ageMs,
@@ -39,8 +42,8 @@ export function classifyFailure(context: FailureContext): {
     error.includes("blockhash not found") ||
     error.includes("expired") ||
     (context.lastValidBlockHeight !== null &&
-      context.currentSlot !== null &&
-      context.currentSlot > context.lastValidBlockHeight)
+      context.currentBlockHeight !== null &&
+      context.currentBlockHeight > context.lastValidBlockHeight)
   ) {
     return {
       failureClass: "BLOCKHASH_EXPIRED",

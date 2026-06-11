@@ -26,6 +26,10 @@ export type AgentNodeTone = "router" | "raw" | "signal" | "engine" | "inference"
 export interface NetworkSnapshot {
   currentSlot: bigint;
   currentLeader?: string;
+  nextJitoLeaderSlot?: bigint;
+  nextJitoLeaderIdentity?: string;
+  nextJitoLeaderSlotsAway?: number;
+  recommendedSubmitSlot?: bigint;
   observedAt: Date;
 }
 
@@ -39,13 +43,32 @@ export interface TrackedTransaction {
   confirmedAt?: Date;
   finalizedAt?: Date;
   slot?: bigint;
+  processedSlot?: bigint;
+  confirmedSlot?: bigint;
+  finalizedSlot?: bigint;
+  processedViaStream?: boolean;
+  confirmedViaStream?: boolean;
+  finalizedViaStream?: boolean;
+  submittedToProcessedMs?: number;
+  processedToConfirmedMs?: number;
+  confirmedToFinalizedMs?: number;
+  submittedToFinalizedMs?: number;
   tipLamports?: bigint;
+  tipSource?: string;
+  networkMedianFee?: bigint;
+  tipAccountActivity?: bigint;
   failureClass?: FailureClass;
   failureReason?: string;
+  bundleFailureCode?: string;
+  bundleFailureSource?: string;
   attempt?: number;
+  maxAttempts?: number;
   parentTransactionId?: string;
   lastValidBlockHeight?: bigint;
   submittedSlot?: bigint;
+  targetLeaderSlot?: bigint;
+  targetLeaderIdentity?: string;
+  leaderSlotsAway?: number;
 }
 
 export interface AgentFlowStep {

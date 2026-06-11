@@ -40,14 +40,21 @@ This starts Postgres, Redis, runs Prisma migrations, then launches:
 
 - watcher — owns the single Yellowstone stream, writes slots to Redis, and publishes tracked tx events to `halo:tx_events`
 - tracker — consumes Redis tx events into Postgres, then RPC-polls for confirmed/finalized
-- dashboard — `http://localhost:5173`
+- intelligence — runs the AI agent pipeline on failures (classify → tip → timing → retry decision)
+- dashboard — `http://localhost:5173` with live agent swarm graph and reasoning flow
 
-Only one Yellowstone gRPC stream is used. Watcher and tracker are decoupled through Redis Streams.
+Only one Yellowstone gRPC stream is used. Watcher, tracker, and intelligence are decoupled through Redis Streams.
 
-The executor is intentionally not included because it submits a real Jito bundle and can spend SOL. Run it manually when you are ready:
+The executor is intentionally not included in `dev:all` because it submits real Jito bundles and can spend SOL. Run it manually when you are ready:
 
 ```bash
 pnpm dev:executor
+```
+
+For autonomous agent retries, run the executor in daemon mode (listens on `halo:retry_requests`):
+
+```bash
+pnpm dev:executor:daemon
 ```
 
 You can still run pieces individually:
@@ -57,6 +64,7 @@ pnpm infra:up
 pnpm db:migrate
 pnpm dev:watcher
 pnpm dev:tracker
+pnpm dev:intelligence
 pnpm dev:dashboard
 ```
 
@@ -90,6 +98,31 @@ TRANSFER_DESTINATION="destination-wallet-pubkey"
 TRANSFER_LAMPORTS="1000"
 JITO_TIP_LAMPORTS="10000"
 JITO_BLOCK_ENGINE_URL="mainnet.block-engine.jito.wtf"
+```
+
+### AI Agent Pipeline
+
+When a bundle fails or stalls, the intelligence service:
+
+1. **Failure Agent** — classifies the failure (`BLOCKHASH_EXPIRED`, `TIP_TOO_LOW`, `LEADER_SKIPPED`, etc.)
+2. **Tip Agent** — calculates dynamic tip from recent prioritization fees and Jito tip-account activity
+3. **Timing Agent** — reads the Jito leader schedule and recommends hold vs submit
+4. **Halo orchestrator** — synthesizes a final decision (LLM if `OPENAI_API_KEY` is set, heuristic fallback otherwise)
+5. **Retry Executor** — publishes a retry request; the executor daemon resubmits with fresh blockhash and recalculated tip
+
+Open the dashboard **Agents** section to see the swarm topology, `agent_comms.log`, and the vertical reasoning chain — same layout as the reference mission-control UI.
+
+To demo autonomous blockhash-expiry recovery:
+
+```bash
+# Terminal 1: full stack
+pnpm dev:all
+
+# Terminal 2: retry daemon (needs funded wallet)
+pnpm dev:executor:daemon
+
+# Terminal 3: submit with fault injection
+FAULT_INJECT_EXPIRED_BLOCKHASH=true pnpm dev:executor
 ```
 
 Useful checks:

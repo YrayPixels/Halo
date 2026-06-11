@@ -13,13 +13,18 @@ export const REDIS_GROUPS = {
   executor: "halo-executor",
 } as const;
 
-export type StreamTxStatus = Extract<TransactionStatus, "PROCESSED" | "FAILED">;
+export type StreamTxStatus = Extract<
+  TransactionStatus,
+  "PROCESSED" | "CONFIRMED" | "FINALIZED" | "FAILED"
+>;
 
 export interface TxLifecycleEvent {
   signature: string;
   slot: string;
   status: StreamTxStatus;
   observedAt: string;
+  source: "yellowstone" | "rpc";
+  errorMessage?: string;
 }
 
 export interface AgentCommEvent {
@@ -67,6 +72,10 @@ export async function publishTxEvent(redis: Redis, event: TxLifecycleEvent): Pro
     event.status,
     "observedAt",
     event.observedAt,
+    "source",
+    event.source,
+    "errorMessage",
+    event.errorMessage ?? "",
   );
 }
 
@@ -128,7 +137,12 @@ export function parseTxEvent(fields: string[]): TxLifecycleEvent | null {
     return null;
   }
 
-  if (record.status !== "PROCESSED" && record.status !== "FAILED") {
+  if (
+    record.status !== "PROCESSED" &&
+    record.status !== "CONFIRMED" &&
+    record.status !== "FINALIZED" &&
+    record.status !== "FAILED"
+  ) {
     return null;
   }
 
@@ -137,6 +151,8 @@ export function parseTxEvent(fields: string[]): TxLifecycleEvent | null {
     slot: record.slot,
     status: record.status,
     observedAt: record.observedAt,
+    source: record.source === "rpc" ? "rpc" : "yellowstone",
+    errorMessage: record.errorMessage || undefined,
   };
 }
 

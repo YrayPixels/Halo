@@ -8,6 +8,7 @@ export interface LlmDecisionInput {
   recommendedTipLamports: number;
   leaderSlotsAway: number;
   attempt: number;
+  maxAttempts: number;
   failureAgentNote: string;
   tipAgentNote: string;
   timingAgentNote: string;
@@ -22,7 +23,7 @@ export interface LlmDecisionOutput {
 }
 
 function heuristicDecision(input: LlmDecisionInput): LlmDecisionOutput {
-  const shouldRetry = input.attempt < 4;
+  const shouldRetry = input.attempt < input.maxAttempts;
 
   if (!shouldRetry) {
     return {

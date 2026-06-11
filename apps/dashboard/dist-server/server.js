@@ -4,7 +4,7 @@ import { Redis } from "ioredis";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
-import { prisma } from "@halo/database";
+import { getLatestAgentDecision, getLatestAgentFlow, getRecentAgentComms, prisma, } from "@halo/database";
 import { optionalEnv, REDIS_KEYS } from "@halo/shared";
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const rootDir = resolve(appDir, "../..");
@@ -20,8 +20,15 @@ function serializeBigInt(value) {
 }
 app.get("/api/overview", async (_request, response) => {
     try {
-        const [currentSlot, transactions, statusRows] = await Promise.all([
+        const [currentSlot, currentLeader, nextJitoLeaderSlot, nextJitoLeaderIdentity, nextJitoLeaderSlotsAway, recommendedSubmitSlot, networkMedianPriorityFee, tipAccountActivity, transactions, statusRows, agentSteps, agentComms, latestDecision,] = await Promise.all([
             redis.get(REDIS_KEYS.networkCurrentSlot),
+            redis.get(REDIS_KEYS.networkCurrentLeader),
+            redis.get(REDIS_KEYS.nextJitoLeaderSlot),
+            redis.get(REDIS_KEYS.nextJitoLeaderIdentity),
+            redis.get(REDIS_KEYS.nextJitoLeaderSlotsAway),
+            redis.get(REDIS_KEYS.recommendedSubmitSlot),
+            redis.get(REDIS_KEYS.networkMedianPriorityFee),
+            redis.get(REDIS_KEYS.tipAccountActivity),
             prisma.transaction.findMany({
                 orderBy: { createdAt: "desc" },
                 take: 20,
@@ -29,13 +36,35 @@ app.get("/api/overview", async (_request, response) => {
             prisma.transaction.findMany({
                 select: { status: true },
             }),
+            getLatestAgentFlow(),
+            getRecentAgentComms(30),
+            getLatestAgentDecision(),
         ]);
         const counts = statusRows.reduce((accumulator, row) => {
             accumulator[row.status] = (accumulator[row.status] ?? 0) + 1;
             return accumulator;
         }, {});
+        const flowSteps = agentSteps.map((step) => ({
+            id: step.id,
+            agentName: step.agentName,
+            label: step.label,
+            note: step.note,
+            tone: step.tone,
+            stepOrder: step.stepOrder,
+            transactionId: step.transactionId,
+            createdAt: step.createdAt.toISOString(),
+        }));
         response.json({
             currentSlot,
+            network: {
+                currentLeader,
+                nextJitoLeaderSlot,
+                nextJitoLeaderIdentity,
+                nextJitoLeaderSlotsAway,
+                recommendedSubmitSlot,
+                networkMedianPriorityFee,
+                tipAccountActivity,
+            },
             counts,
             transactions: transactions.map((transaction) => ({
                 id: transaction.id,
@@ -47,8 +76,59 @@ app.get("/api/overview", async (_request, response) => {
                 confirmedAt: transaction.confirmedAt?.toISOString() ?? null,
                 finalizedAt: transaction.finalizedAt?.toISOString() ?? null,
                 slot: serializeBigInt(transaction.slot),
+                processedSlot: serializeBigInt(transaction.processedSlot),
+                confirmedSlot: serializeBigInt(transaction.confirmedSlot),
+                finalizedSlot: serializeBigInt(transaction.finalizedSlot),
+                processedViaStream: transaction.processedViaStream,
+                confirmedViaStream: transaction.confirmedViaStream,
+                finalizedViaStream: transaction.finalizedViaStream,
+                submittedToProcessedMs: transaction.submittedToProcessedMs,
+                processedToConfirmedMs: transaction.processedToConfirmedMs,
+                confirmedToFinalizedMs: transaction.confirmedToFinalizedMs,
+                submittedToFinalizedMs: transaction.submittedToFinalizedMs,
                 tipLamports: serializeBigInt(transaction.tipLamports),
+                tipSource: transaction.tipSource,
+                networkMedianFee: serializeBigInt(transaction.networkMedianFee),
+                tipAccountActivity: serializeBigInt(transaction.tipAccountActivity),
+                failureClass: transaction.failureClass,
+                failureReason: transaction.failureReason,
+                bundleFailureCode: transaction.bundleFailureCode,
+                bundleFailureSource: transaction.bundleFailureSource,
+                attempt: transaction.attempt,
+                maxAttempts: transaction.maxAttempts,
+                submittedSlot: serializeBigInt(transaction.submittedSlot),
+                targetLeaderSlot: serializeBigInt(transaction.targetLeaderSlot),
+                targetLeaderIdentity: transaction.targetLeaderIdentity,
+                leaderSlotsAway: transaction.leaderSlotsAway,
             })),
+            agents: {
+                flowSteps,
+                comms: agentComms
+                    .slice()
+                    .reverse()
+                    .map((comm) => ({
+                    id: comm.id,
+                    fromAgent: comm.fromAgent,
+                    toAgent: comm.toAgent,
+                    message: comm.message,
+                    transactionId: comm.transactionId,
+                    createdAt: comm.createdAt.toISOString(),
+                })),
+                latestDecision: latestDecision
+                    ? {
+                        id: latestDecision.id,
+                        transactionId: latestDecision.transactionId,
+                        failureClass: latestDecision.failureClass,
+                        reasoning: latestDecision.reasoning,
+                        action: latestDecision.action,
+                        recommendedTipLamports: latestDecision.recommendedTipLamports.toString(),
+                        shouldRetry: latestDecision.shouldRetry,
+                        leaderSlotsAway: latestDecision.leaderSlotsAway,
+                        createdAt: latestDecision.createdAt.toISOString(),
+                        bundleId: latestDecision.transaction.bundleId,
+                    }
+                    : null,
+            },
         });
     }
     catch (error) {

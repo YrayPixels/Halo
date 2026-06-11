@@ -32,10 +32,30 @@ interface TransactionRow {
   confirmedAt: Date | null;
   finalizedAt: Date | null;
   slot: bigint | null;
+  processedSlot: bigint | null;
+  confirmedSlot: bigint | null;
+  finalizedSlot: bigint | null;
+  processedViaStream: boolean;
+  confirmedViaStream: boolean;
+  finalizedViaStream: boolean;
+  submittedToProcessedMs: number | null;
+  processedToConfirmedMs: number | null;
+  confirmedToFinalizedMs: number | null;
+  submittedToFinalizedMs: number | null;
   tipLamports: bigint | null;
+  tipSource: string | null;
+  networkMedianFee: bigint | null;
+  tipAccountActivity: bigint | null;
   failureClass: string | null;
   failureReason: string | null;
+  bundleFailureCode: string | null;
+  bundleFailureSource: string | null;
   attempt: number;
+  maxAttempts: number;
+  submittedSlot: bigint | null;
+  targetLeaderSlot: bigint | null;
+  targetLeaderIdentity: string | null;
+  leaderSlotsAway: number | null;
 }
 
 function serializeBigInt(value: bigint | number | null): string | null {
@@ -48,9 +68,30 @@ function serializeBigInt(value: bigint | number | null): string | null {
 
 app.get("/api/overview", async (_request, response) => {
   try {
-    const [currentSlot, transactions, statusRows, agentSteps, agentComms, latestDecision] =
+    const [
+      currentSlot,
+      currentLeader,
+      nextJitoLeaderSlot,
+      nextJitoLeaderIdentity,
+      nextJitoLeaderSlotsAway,
+      recommendedSubmitSlot,
+      networkMedianPriorityFee,
+      tipAccountActivity,
+      transactions,
+      statusRows,
+      agentSteps,
+      agentComms,
+      latestDecision,
+    ] =
       await Promise.all([
         redis.get(REDIS_KEYS.networkCurrentSlot),
+        redis.get(REDIS_KEYS.networkCurrentLeader),
+        redis.get(REDIS_KEYS.nextJitoLeaderSlot),
+        redis.get(REDIS_KEYS.nextJitoLeaderIdentity),
+        redis.get(REDIS_KEYS.nextJitoLeaderSlotsAway),
+        redis.get(REDIS_KEYS.recommendedSubmitSlot),
+        redis.get(REDIS_KEYS.networkMedianPriorityFee),
+        redis.get(REDIS_KEYS.tipAccountActivity),
         prisma.transaction.findMany({
           orderBy: { createdAt: "desc" },
           take: 20,
@@ -81,6 +122,15 @@ app.get("/api/overview", async (_request, response) => {
 
     response.json({
       currentSlot,
+      network: {
+        currentLeader,
+        nextJitoLeaderSlot,
+        nextJitoLeaderIdentity,
+        nextJitoLeaderSlotsAway,
+        recommendedSubmitSlot,
+        networkMedianPriorityFee,
+        tipAccountActivity,
+      },
       counts,
       transactions: transactions.map((transaction) => ({
         id: transaction.id,
@@ -92,10 +142,30 @@ app.get("/api/overview", async (_request, response) => {
         confirmedAt: transaction.confirmedAt?.toISOString() ?? null,
         finalizedAt: transaction.finalizedAt?.toISOString() ?? null,
         slot: serializeBigInt(transaction.slot),
+        processedSlot: serializeBigInt(transaction.processedSlot),
+        confirmedSlot: serializeBigInt(transaction.confirmedSlot),
+        finalizedSlot: serializeBigInt(transaction.finalizedSlot),
+        processedViaStream: transaction.processedViaStream,
+        confirmedViaStream: transaction.confirmedViaStream,
+        finalizedViaStream: transaction.finalizedViaStream,
+        submittedToProcessedMs: transaction.submittedToProcessedMs,
+        processedToConfirmedMs: transaction.processedToConfirmedMs,
+        confirmedToFinalizedMs: transaction.confirmedToFinalizedMs,
+        submittedToFinalizedMs: transaction.submittedToFinalizedMs,
         tipLamports: serializeBigInt(transaction.tipLamports),
+        tipSource: transaction.tipSource,
+        networkMedianFee: serializeBigInt(transaction.networkMedianFee),
+        tipAccountActivity: serializeBigInt(transaction.tipAccountActivity),
         failureClass: transaction.failureClass,
         failureReason: transaction.failureReason,
+        bundleFailureCode: transaction.bundleFailureCode,
+        bundleFailureSource: transaction.bundleFailureSource,
         attempt: transaction.attempt,
+        maxAttempts: transaction.maxAttempts,
+        submittedSlot: serializeBigInt(transaction.submittedSlot),
+        targetLeaderSlot: serializeBigInt(transaction.targetLeaderSlot),
+        targetLeaderIdentity: transaction.targetLeaderIdentity,
+        leaderSlotsAway: transaction.leaderSlotsAway,
       })),
       agents: {
         flowSteps,

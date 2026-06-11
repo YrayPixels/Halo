@@ -17,14 +17,33 @@ model Transaction {
   confirmedAt           DateTime?
   finalizedAt           DateTime?
   slot                  BigInt?
+  processedSlot         BigInt?
+  confirmedSlot         BigInt?
+  finalizedSlot         BigInt?
+  processedViaStream    Boolean   @default(false)
+  confirmedViaStream    Boolean   @default(false)
+  finalizedViaStream    Boolean   @default(false)
+  submittedToProcessedMs Int?
+  processedToConfirmedMs Int?
+  confirmedToFinalizedMs Int?
+  submittedToFinalizedMs Int?
   tipLamports           BigInt?
+  tipSource             String?
+  networkMedianFee      BigInt?
+  tipAccountActivity    BigInt?
   failureClass          String?
   failureReason         String?
   errorMessage          String?
+  bundleFailureCode     String?
+  bundleFailureSource   String?
   attempt               Int       @default(1)
+  maxAttempts           Int       @default(4)
   parentTransactionId   String?
   lastValidBlockHeight  BigInt?
   submittedSlot         BigInt?
+  targetLeaderSlot      BigInt?
+  targetLeaderIdentity  String?
+  leaderSlotsAway       Int?
   agentProcessed        Boolean   @default(false)
 
   parentTransaction Transaction?  @relation("RetryChain", fields: [parentTransactionId], references: [id])
