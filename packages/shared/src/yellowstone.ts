@@ -1,10 +1,12 @@
 import { createRequire } from "node:module";
 import type { ClientDuplexStream, SubscribeRequest } from "@triton-one/yellowstone-grpc";
 
-export { CommitmentLevel } from "@triton-one/yellowstone-grpc";
 export type { ClientDuplexStream, SubscribeRequest, SubscribeUpdate } from "@triton-one/yellowstone-grpc";
 
 const require = createRequire(import.meta.url);
+const yellowstoneGrpc = require("@triton-one/yellowstone-grpc") as typeof import("@triton-one/yellowstone-grpc");
+
+export const CommitmentLevel = yellowstoneGrpc.CommitmentLevel;
 
 export interface YellowstoneClient {
   connect(): Promise<void>;
